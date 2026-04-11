@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
 use crate::life::growth::Lifecycle;
+use crate::magic::mana::ManaReservoir;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
@@ -80,6 +81,11 @@ fn tree_seed_spread(
                     stage: TreeStage::Sapling,
                     growth: 0.1,
                     spread_progress: 0.0,
+                },
+                ManaReservoir {
+                    capacity: 10.0 + tile.mana_density * 10.0,
+                    stored: tile.mana_density * 2.0,
+                    stability: 0.85,
                 },
             ));
             break;

@@ -35,8 +35,10 @@ fn ambient_mana_drift(
     tiles: Query<&RegionTile>,
     mut reservoirs: Query<&mut ManaReservoir>,
 ) {
-    let avg_tile_mana =
-        tiles.iter().map(|tile| tile.mana_density).sum::<f32>() / tiles.iter().len().max(1) as f32;
+    let (sum, count) = tiles.iter().fold((0.0f32, 0usize), |acc, tile| {
+        (acc.0 + tile.mana_density, acc.1 + 1)
+    });
+    let avg_tile_mana = sum / count.max(1) as f32;
     let delta_days = clock.delta_days();
 
     for mut reservoir in &mut reservoirs {

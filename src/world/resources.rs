@@ -65,6 +65,8 @@ impl Plugin for WorldResourcesPlugin {
                 attach_tree_visuals,
                 sync_tree_visuals,
                 attach_shelter_visuals,
+                sync_shelter_visuals,
+                decay_shelter_integrity,
                 regrow_region_resources,
                 update_world_stats,
             ),
@@ -112,7 +114,15 @@ fn attach_tree_visuals(mut commands: Commands, trees: Query<Entity, Added<Tree>>
 }
 
 fn sync_tree_visuals(
-    trees: Query<(&Tree, &ManaReservoir, &Children), Changed<Tree>>,
+    trees: Query<
+        (&Tree, Option<&ManaReservoir>, &Children),
+        Or<(
+            Changed<Tree>,
+            Added<Tree>,
+            Changed<ManaReservoir>,
+            Added<ManaReservoir>,
+        )>,
+    >,
     mut trunks: Query<(&mut Sprite, &mut Transform), With<TreeTrunk>>,
     mut canopies: Query<(&mut Sprite, &mut Transform), (With<TreeCanopy>, Without<TreeTrunk>)>,
     mut accents: Query<
@@ -148,7 +158,9 @@ fn sync_tree_visuals(
                 Color::srgb(0.28, 0.67, 0.27),
             ),
         };
-        let mana_tint = (mana.stored / mana.capacity.max(1.0)).clamp(0.0, 1.0);
+        let mana_tint = mana
+            .map(|mana| (mana.stored / mana.capacity.max(1.0)).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
 
         for child in children.iter() {
             if let Ok((mut sprite, mut transform)) = trunks.get_mut(child) {
@@ -177,6 +189,40 @@ fn sync_tree_visuals(
                 transform.translation.y = canopy_size.y * 0.28;
             }
         }
+    }
+}
+
+fn sync_shelter_visuals(
+    shelters: Query<(&Shelter, &Children), Or<(Changed<Shelter>, Added<Shelter>)>>,
+    mut bases: Query<&mut Sprite, With<ShelterBase>>,
+    mut roofs: Query<&mut Sprite, (With<ShelterRoof>, Without<ShelterBase>)>,
+) {
+    for (shelter, children) in &shelters {
+        let integrity = shelter.integrity.clamp(0.0, 1.0);
+        let wear = 1.0 - integrity;
+
+        let base_color = Color::srgb(0.49 - wear * 0.10, 0.36 - wear * 0.08, 0.22 - wear * 0.06);
+        let roof_color = Color::srgb(0.30 - wear * 0.06, 0.17 - wear * 0.05, 0.11 - wear * 0.04);
+
+        for child in children.iter() {
+            if let Ok(mut sprite) = bases.get_mut(child) {
+                sprite.color = base_color;
+            }
+            if let Ok(mut sprite) = roofs.get_mut(child) {
+                sprite.color = roof_color;
+            }
+        }
+    }
+}
+
+fn decay_shelter_integrity(clock: Res<SimulationClock>, mut shelters: Query<&mut Shelter>) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for mut shelter in &mut shelters {
+        shelter.integrity = (shelter.integrity - delta_days * 0.0015).max(0.0);
     }
 }
 

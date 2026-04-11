@@ -26,6 +26,7 @@ pub enum LogEventKind {
     Birth,
     Death,
     Discovery,
+    Construction,
 }
 
 #[derive(Resource, Default)]

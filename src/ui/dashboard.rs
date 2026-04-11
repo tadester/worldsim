@@ -150,7 +150,7 @@ fn update_trend_history(
         match entry.kind {
             LogEventKind::Birth => births += 1,
             LogEventKind::Death => deaths += 1,
-            LogEventKind::Discovery => {}
+            LogEventKind::Discovery | LogEventKind::Construction => {}
         }
     }
 
@@ -174,5 +174,6 @@ fn event_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Birth => "Birth",
         LogEventKind::Death => "Death",
         LogEventKind::Discovery => "Discovery",
+        LogEventKind::Construction => "Build",
     }
 }

@@ -65,5 +65,6 @@ fn short_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Birth => "+",
         LogEventKind::Death => "-",
         LogEventKind::Discovery => "*",
+        LogEventKind::Construction => "#",
     }
 }

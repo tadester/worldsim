@@ -57,12 +57,12 @@ fn advance_lifecycle(
 
 fn grow_trees(
     clock: Res<SimulationClock>,
-    mut trees: Query<(&mut Tree, &mut Sprite)>,
+    mut trees: Query<&mut Tree>,
     mut regions: Query<(&RegionTile, &mut RegionState)>,
 ) {
     let delta_days = clock.delta_days();
 
-    for (mut tree, mut sprite) in &mut trees {
+    for mut tree in &mut trees {
         let mut local_growth_factor = 0.1;
 
         for (tile, mut state) in &mut regions {
@@ -81,13 +81,10 @@ fn grow_trees(
 
         if tree.growth >= 0.9 {
             tree.stage = TreeStage::Mature;
-            sprite.custom_size = Some(Vec2::splat(24.0));
         } else if tree.growth >= 0.45 {
             tree.stage = TreeStage::Young;
-            sprite.custom_size = Some(Vec2::splat(18.0));
         } else {
             tree.stage = TreeStage::Sapling;
-            sprite.custom_size = Some(Vec2::splat(12.0));
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::agents::animal::Animal;
 use crate::agents::decisions::NpcIntent;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
-use crate::agents::npc::Npc;
+use crate::agents::npc::{Npc, NpcHome};
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
 use crate::world::resources::{Shelter, Tree, TreeStage};
@@ -47,6 +47,7 @@ fn spawn_inspector(mut commands: Commands) {
 fn cycle_selected_entity(
     keys: Res<ButtonInput<KeyCode>>,
     trees: Query<(Entity, &Transform), With<Tree>>,
+    shelters: Query<(Entity, &Transform), With<Shelter>>,
     animals: Query<(Entity, &Transform), With<Animal>>,
     npcs: Query<(Entity, &Transform), With<Npc>>,
     mut selected: ResMut<SelectedEntity>,
@@ -59,6 +60,9 @@ fn cycle_selected_entity(
         trees
             .iter()
             .map(|(entity, transform)| (entity, transform.translation.x, transform.translation.y))
+            .chain(shelters.iter().map(|(entity, transform)| {
+                (entity, transform.translation.x, transform.translation.y)
+            }))
             .chain(animals.iter().map(|(entity, transform)| {
                 (entity, transform.translation.x, transform.translation.y)
             }))
@@ -89,6 +93,7 @@ fn update_inspector(
         &Needs,
         &Memory,
         &NpcIntent,
+        &NpcHome,
         &ManaReservoir,
         &Transform,
     )>,
@@ -122,9 +127,15 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
-        } else if let Ok((npc, needs, memory, intent, mana, transform)) = npcs.get(entity) {
+        } else if let Ok((npc, needs, memory, intent, home, mana, transform)) = npcs.get(entity) {
+            let home_line = home
+                .shelter
+                .and_then(|home_entity| shelters.get(home_entity).ok())
+                .map(|(shelter, _)| format!("Home shelter integrity: {:.2}", shelter.integrity))
+                .unwrap_or_else(|| "Home shelter: none".to_string());
+
             format!(
-                "Type: NPC\nName: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nMana: {:.1}/{:.1}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.health,
                 intent.label,
@@ -133,6 +144,7 @@ fn update_inspector(
                 needs.curiosity,
                 mana.stored,
                 mana.capacity,
+                home_line,
                 memory.last_mana_insight,
                 transform.translation.x,
                 transform.translation.y,
@@ -141,7 +153,8 @@ fn update_inspector(
             "Selected entity no longer exists".to_string()
         }
     } else {
-        "No entity selected\nPress Tab to cycle through trees, animals, and NPCs".to_string()
+        "No entity selected\nPress Tab to cycle through trees, shelters, animals, and NPCs"
+            .to_string()
     };
 
     for mut text in &mut query {

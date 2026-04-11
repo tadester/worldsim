@@ -28,6 +28,11 @@ pub struct Npc {
     pub speed: f32,
 }
 
+#[derive(Component, Debug, Clone, Default)]
+pub struct NpcHome {
+    pub shelter: Option<Entity>,
+}
+
 #[derive(Bundle)]
 pub struct NpcBundle {
     pub sprite: Sprite,
@@ -38,6 +43,7 @@ pub struct NpcBundle {
     pub memory: Memory,
     pub relationships: Relationships,
     pub intent: NpcIntent,
+    pub home: NpcHome,
     pub mana_reservoir: ManaReservoir,
     pub mana_style: ManaStorageStyle,
     pub mana_practice: ManaPractice,
@@ -71,6 +77,7 @@ impl NpcBundle {
             memory: Memory::default(),
             relationships: Relationships::default(),
             intent: NpcIntent::default(),
+            home: NpcHome::default(),
             mana_reservoir,
             mana_style,
             mana_practice: ManaPractice::default(),
@@ -119,7 +126,10 @@ fn attach_npc_visuals(mut commands: Commands, npcs: Query<Entity, Added<Npc>>) {
 }
 
 fn sync_npc_visuals(
-    npcs: Query<(&Npc, &ManaReservoir, &ManaPractice, &Children), Changed<ManaReservoir>>,
+    npcs: Query<
+        (&Npc, &ManaReservoir, &ManaPractice, &Children),
+        Or<(Changed<Npc>, Changed<ManaReservoir>, Changed<ManaPractice>)>,
+    >,
     mut torsos: Query<&mut Sprite, With<NpcTorso>>,
     mut heads: Query<&mut Sprite, (With<NpcHead>, Without<NpcTorso>)>,
     mut auras: Query<
