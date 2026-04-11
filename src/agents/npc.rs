@@ -6,7 +6,7 @@ use crate::agents::needs::Needs;
 use crate::agents::relationships::Relationships;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::magic::storage::ManaStorageStyle;
+use crate::magic::storage::{ManaPractice, ManaStorageStyle};
 
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
@@ -28,6 +28,7 @@ pub struct NpcBundle {
     pub intent: NpcIntent,
     pub mana_reservoir: ManaReservoir,
     pub mana_style: ManaStorageStyle,
+    pub mana_practice: ManaPractice,
 }
 
 impl NpcBundle {
@@ -60,6 +61,7 @@ impl NpcBundle {
             intent: NpcIntent::default(),
             mana_reservoir,
             mana_style,
+            mana_practice: ManaPractice::default(),
         }
     }
 }
