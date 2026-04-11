@@ -2,12 +2,13 @@ use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
 use crate::agents::decisions::NpcIntent;
+use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::world::resources::{Shelter, Tree, TreeStage};
+use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
 
 #[derive(Resource, Default)]
 struct SelectedEntity {
@@ -86,7 +87,7 @@ fn cycle_selected_entity(
 fn update_inspector(
     selected: Res<SelectedEntity>,
     trees: Query<(&Tree, &Transform, Option<&ManaReservoir>)>,
-    shelters: Query<(&Shelter, &Transform)>,
+    shelters: Query<(&Shelter, Option<&ShelterStockpile>, &Transform)>,
     animals: Query<(&Animal, &Lifecycle, &Transform)>,
     npcs: Query<(
         &Npc,
@@ -94,6 +95,7 @@ fn update_inspector(
         &Memory,
         &NpcIntent,
         &NpcHome,
+        &Inventory,
         &ManaReservoir,
         &Transform,
     )>,
@@ -109,11 +111,20 @@ fn update_inspector(
                 transform.translation.y,
                 mana.map(|m| m.stored).unwrap_or(0.0),
             )
-        } else if let Ok((shelter, transform)) = shelters.get(entity) {
+        } else if let Ok((shelter, stockpile, transform)) = shelters.get(entity) {
+            let stockpile_line = stockpile
+                .map(|pile| {
+                    format!(
+                        "Stockpile F/W: {:.1}/{:.1} (max {:.0}/{:.0})",
+                        pile.food, pile.wood, pile.max_food, pile.max_wood
+                    )
+                })
+                .unwrap_or_else(|| "Stockpile: none".to_string());
             format!(
-                "Type: Shelter\nIntegrity: {:.2}\nSafety bonus: {:.2}\nPos: {:.0}, {:.0}",
+                "Type: Shelter\nIntegrity: {:.2}\nSafety bonus: {:.2}\n{}\nPos: {:.0}, {:.0}",
                 shelter.integrity,
                 shelter.safety_bonus,
+                stockpile_line,
                 transform.translation.x,
                 transform.translation.y,
             )
@@ -127,21 +138,34 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
-        } else if let Ok((npc, needs, memory, intent, home, mana, transform)) = npcs.get(entity) {
+        } else if let Ok((npc, needs, memory, intent, home, inventory, mana, transform)) =
+            npcs.get(entity)
+        {
             let home_line = home
                 .shelter
                 .and_then(|home_entity| shelters.get(home_entity).ok())
-                .map(|(shelter, _)| format!("Home shelter integrity: {:.2}", shelter.integrity))
+                .map(|(shelter, stockpile, _)| {
+                    let mut line = format!("Home shelter integrity: {:.2}", shelter.integrity);
+                    if let Some(pile) = stockpile {
+                        line.push_str(&format!(
+                            " | stockpile F/W {:.1}/{:.1}",
+                            pile.food, pile.wood
+                        ));
+                    }
+                    line
+                })
                 .unwrap_or_else(|| "Home shelter: none".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.health,
                 intent.label,
                 needs.hunger,
                 needs.safety,
                 needs.curiosity,
+                inventory.food,
+                inventory.wood,
                 mana.stored,
                 mana.capacity,
                 home_line,

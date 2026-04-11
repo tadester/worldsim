@@ -1,5 +1,8 @@
 use bevy::prelude::*;
 
+use std::collections::HashMap;
+
+use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
@@ -7,7 +10,7 @@ use crate::agents::relationships::Relationships;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
-use crate::world::resources::Shelter;
+use crate::world::resources::{Shelter, ShelterStockpile};
 
 #[derive(Component, Debug, Clone)]
 pub struct NpcIntent {
@@ -33,6 +36,10 @@ impl Plugin for DecisionPlugin {
             (
                 evaluate_npc_intents,
                 apply_npc_intents,
+                harvest_npc_resources,
+                transfer_home_stockpiles,
+                withdraw_home_food,
+                consume_carried_food,
                 apply_shelter_comfort.after(apply_npc_intents),
                 repair_npc_shelters.after(apply_shelter_comfort),
                 build_npc_shelters.after(repair_npc_shelters),
@@ -46,7 +53,7 @@ fn evaluate_npc_intents(
     settings: Res<MapSettings>,
     regions: Query<(&RegionTile, &RegionState)>,
     npc_positions: Query<(Entity, &Transform), With<Npc>>,
-    shelters: Query<(&Shelter, &Transform), With<Shelter>>,
+    shelters: Query<(Entity, &Shelter, Option<&ShelterStockpile>, &Transform)>,
     mut npcs: Query<(
         Entity,
         &Transform,
@@ -56,64 +63,79 @@ fn evaluate_npc_intents(
         &mut Memory,
         &mut NpcIntent,
         &NpcHome,
+        &Inventory,
     )>,
 ) {
+    let mut region_index: HashMap<IVec2, (RegionTile, RegionState)> = HashMap::new();
+    let mut best_forage = -1.0;
+    let mut best_forage_coord = IVec2::ZERO;
+    let mut best_biomass = -1.0;
+    let mut best_biomass_coord = IVec2::ZERO;
+    let mut safest_score = -1.0;
+    let mut safest_coord = IVec2::ZERO;
+    let mut most_interesting = -1.0;
+    let mut interesting_coord = IVec2::ZERO;
+
+    for (tile, state) in &regions {
+        region_index.insert(tile.coord, (*tile, *state));
+
+        if state.forage > best_forage {
+            best_forage = state.forage;
+            best_forage_coord = tile.coord;
+        }
+
+        if state.tree_biomass > best_biomass {
+            best_biomass = state.tree_biomass;
+            best_biomass_coord = tile.coord;
+        }
+
+        let safe_score = tile.soil_fertility + state.forage * 0.2 - tile.mana_density * 0.05;
+        if safe_score > safest_score {
+            safest_score = safe_score;
+            safest_coord = tile.coord;
+        }
+
+        let interesting_score = tile.mana_density + tile.temperature * 0.3;
+        if interesting_score > most_interesting {
+            most_interesting = interesting_score;
+            interesting_coord = tile.coord;
+        }
+    }
+
     let positions: Vec<(Entity, Vec2)> = npc_positions
         .iter()
         .map(|(entity, transform)| (entity, transform.translation.truncate()))
         .collect();
 
-    for (entity, transform, npc, needs, relationships, mut memory, mut intent, home) in &mut npcs {
+    for (entity, transform, npc, needs, relationships, mut memory, mut intent, home, inventory) in
+        &mut npcs
+    {
         let pos = transform.translation.truncate();
         let current_coord = settings.tile_coord_for_position(pos);
-        let home_shelter = home
-            .shelter
-            .and_then(|shelter_entity| shelters.get(shelter_entity).ok())
-            .map(|(shelter, transform)| (*shelter, transform.translation.truncate()));
-        let home_position = home_shelter.map(|(_, pos)| pos);
+        let home_shelter = home.shelter.and_then(|shelter_entity| {
+            shelters
+                .get(shelter_entity)
+                .ok()
+                .map(|(_, shelter, stockpile, transform)| {
+                    (
+                        *shelter,
+                        stockpile.copied(),
+                        transform.translation.truncate(),
+                    )
+                })
+        });
+        let home_position = home_shelter.map(|(_, _, pos)| pos);
         let home_integrity = home_shelter
-            .map(|(shelter, _)| shelter.integrity.clamp(0.0, 1.0))
+            .map(|(shelter, _, _)| shelter.integrity.clamp(0.0, 1.0))
             .unwrap_or(0.0);
-        let home_coord = home_position
-            .map(|p| settings.tile_coord_for_position(p))
-            .unwrap_or(current_coord);
+        let home_stockpiled_wood = home_shelter
+            .and_then(|(_, stockpile, _)| stockpile.map(|pile| pile.wood))
+            .unwrap_or(0.0);
 
-        let mut current_forage = 0.0;
-        let mut best_forage = -1.0;
-        let mut best_forage_coord = current_coord;
-        let mut local_biomass = 0.0;
-        let mut home_biomass = 0.0;
-        let mut safest_score = -1.0;
-        let mut safest_coord = current_coord;
-        let mut most_interesting = -1.0;
-        let mut interesting_coord = current_coord;
-
-        for (tile, state) in &regions {
-            if tile.coord == current_coord {
-                current_forage = state.forage;
-                local_biomass = state.tree_biomass;
-            }
-            if tile.coord == home_coord {
-                home_biomass = state.tree_biomass;
-            }
-
-            if state.forage > best_forage {
-                best_forage = state.forage;
-                best_forage_coord = tile.coord;
-            }
-
-            let safe_score = tile.soil_fertility + state.forage * 0.2 - tile.mana_density * 0.05;
-            if safe_score > safest_score {
-                safest_score = safe_score;
-                safest_coord = tile.coord;
-            }
-
-            let interesting_score = tile.mana_density + tile.temperature * 0.3;
-            if interesting_score > most_interesting {
-                most_interesting = interesting_score;
-                interesting_coord = tile.coord;
-            }
-        }
+        let (current_forage, local_biomass) = region_index
+            .get(&current_coord)
+            .map(|(_, state)| (state.forage, state.tree_biomass))
+            .unwrap_or((0.0, 0.0));
 
         if current_forage > 0.5 {
             memory.last_forage_coord = Some(current_coord);
@@ -125,17 +147,36 @@ fn evaluate_npc_intents(
             .min_by(|(_, a), (_, b)| pos.distance(*a).total_cmp(&pos.distance(*b)))
             .map(|(_, other_pos)| *other_pos);
 
-        let hunger_utility = needs.hunger * 1.4 + needs.thirst * 0.4;
+        let food_ratio = if inventory.max_food <= 0.0 {
+            0.0
+        } else {
+            (inventory.food / inventory.max_food).clamp(0.0, 1.0)
+        };
+        let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4) * (1.15 - food_ratio * 0.55);
         let social_utility = (1.0 - needs.social) * relationships.social_drive;
         let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear);
         let curiosity_utility = needs.curiosity * npc.curiosity * 0.8;
-        let shelter_nearby = shelters.iter().any(|(_, shelter_transform)| {
+        let shelter_nearby = shelters.iter().any(|(_, _, _, shelter_transform)| {
             shelter_transform.translation.truncate().distance(pos) < 42.0
         });
+        let carrying_ratio = {
+            let food = if inventory.max_food <= 0.0 {
+                0.0
+            } else {
+                (inventory.food / inventory.max_food).clamp(0.0, 1.0)
+            };
+            let wood = if inventory.max_wood <= 0.0 {
+                0.0
+            } else {
+                (inventory.wood / inventory.max_wood).clamp(0.0, 1.0)
+            };
+            (food + wood) * 0.5
+        };
         let build_utility = if needs.safety < 0.45
             && local_biomass > 0.9
             && !shelter_nearby
             && home.shelter.is_none()
+            && inventory.wood >= 1.1
         {
             (0.55 - needs.safety) + local_biomass * 0.1
         } else {
@@ -146,8 +187,25 @@ fn evaluate_npc_intents(
         } else {
             0.0
         };
-        let repair_utility = if home_position.is_some() && home_biomass > 0.5 {
+        let repair_utility = if home_position.is_some()
+            && home_integrity < 0.85
+            && (home_stockpiled_wood + inventory.wood) > 0.15
+        {
             (1.0 - home_integrity) * 1.1 + (1.0 - needs.safety) * 0.25
+        } else {
+            0.0
+        };
+        let wants_wood = (home_position.is_some() && home_integrity < 0.85)
+            || (home_position.is_none() && needs.safety < 0.5);
+        let wood_total = home_stockpiled_wood + inventory.wood;
+        let gather_wood_utility =
+            if wants_wood && wood_total < 2.5 && (local_biomass > 0.25 || best_biomass > 0.35) {
+                (1.0 - needs.safety) * 0.85 + (1.0 - home_integrity) * 0.95 + local_biomass * 0.08
+            } else {
+                0.0
+            };
+        let stockpile_utility = if home_position.is_some() && carrying_ratio > 0.55 {
+            carrying_ratio * 0.85 + (inventory.food + inventory.wood) * 0.03
         } else {
             0.0
         };
@@ -158,6 +216,8 @@ fn evaluate_npc_intents(
             && rest_utility >= curiosity_utility
             && rest_utility >= build_utility
             && rest_utility >= repair_utility
+            && rest_utility >= gather_wood_utility
+            && rest_utility >= stockpile_utility
             && needs.fatigue > 0.55
         {
             (
@@ -170,13 +230,43 @@ fn evaluate_npc_intents(
             && repair_utility >= curiosity_utility
             && repair_utility >= build_utility
             && repair_utility >= rest_utility
+            && repair_utility >= gather_wood_utility
+            && repair_utility >= stockpile_utility
             && home_position.is_some()
-            && home_biomass > 0.75
             && home_integrity < 0.85
         {
             (
                 "Repair Shelter".to_string(),
                 home_position.unwrap_or_else(|| tile_center(&settings, current_coord)),
+            )
+        } else if stockpile_utility >= hunger_utility
+            && stockpile_utility >= safety_utility
+            && stockpile_utility >= social_utility
+            && stockpile_utility >= curiosity_utility
+            && stockpile_utility >= build_utility
+            && stockpile_utility >= rest_utility
+            && stockpile_utility >= repair_utility
+            && stockpile_utility >= gather_wood_utility
+            && home_position.is_some()
+        {
+            ("Stockpile".to_string(), home_position.unwrap())
+        } else if gather_wood_utility >= hunger_utility
+            && gather_wood_utility >= safety_utility
+            && gather_wood_utility >= social_utility
+            && gather_wood_utility >= curiosity_utility
+            && gather_wood_utility >= build_utility
+            && gather_wood_utility >= rest_utility
+            && gather_wood_utility >= repair_utility
+            && gather_wood_utility >= stockpile_utility
+        {
+            let target_coord = if local_biomass > 0.25 {
+                current_coord
+            } else {
+                best_biomass_coord
+            };
+            (
+                "Gather Wood".to_string(),
+                tile_center(&settings, target_coord),
             )
         } else if hunger_utility >= social_utility
             && hunger_utility >= safety_utility
@@ -184,6 +274,8 @@ fn evaluate_npc_intents(
             && hunger_utility >= curiosity_utility
             && hunger_utility >= rest_utility
             && hunger_utility >= repair_utility
+            && hunger_utility >= gather_wood_utility
+            && hunger_utility >= stockpile_utility
         {
             let remembered = memory.last_forage_coord.unwrap_or(best_forage_coord);
             ("Forage".to_string(), tile_center(&settings, remembered))
@@ -192,6 +284,8 @@ fn evaluate_npc_intents(
             && build_utility >= curiosity_utility
             && build_utility >= rest_utility
             && build_utility >= repair_utility
+            && build_utility >= gather_wood_utility
+            && build_utility >= stockpile_utility
         {
             ("Build Shelter".to_string(), pos)
         } else if safety_utility >= social_utility && safety_utility >= curiosity_utility {
@@ -243,8 +337,15 @@ fn apply_npc_intents(
 
         match intent.label.as_str() {
             "Forage" => {
-                needs.hunger = (needs.hunger - delta_seconds * 0.05).max(0.0);
                 needs.safety = (needs.safety + delta_seconds * 0.01).min(1.0);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.012).min(1.0);
+            }
+            "Gather Wood" => {
+                needs.safety = (needs.safety + delta_seconds * 0.008).min(1.0);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.018).min(1.0);
+            }
+            "Stockpile" => {
+                needs.safety = (needs.safety + delta_seconds * 0.02).min(1.0);
             }
             "Socialize" => {
                 needs.social = (needs.social + delta_seconds * 0.08).min(1.0);
@@ -272,6 +373,210 @@ fn apply_npc_intents(
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.015).min(1.0);
             }
             _ => {}
+        }
+    }
+}
+
+fn harvest_npc_resources(
+    clock: Res<SimulationClock>,
+    settings: Res<MapSettings>,
+    mut npcs: Query<(&Transform, &NpcIntent, &Needs, &mut Inventory, &mut Memory), With<Npc>>,
+    mut regions: Query<(&RegionTile, &mut RegionState)>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (transform, intent, needs, mut inventory, mut memory) in &mut npcs {
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+
+        match intent.label.as_str() {
+            "Forage" => {
+                if inventory.food_space() <= 0.0 {
+                    continue;
+                }
+
+                for (tile, mut state) in &mut regions {
+                    if tile.coord != coord {
+                        continue;
+                    }
+
+                    let harvest = (0.55 + needs.hunger * 0.95) * delta_days;
+                    let taken = harvest
+                        .min(state.forage)
+                        .min(inventory.food_space())
+                        .max(0.0);
+                    state.forage -= taken;
+                    inventory.food += taken;
+
+                    if taken > 0.0 {
+                        memory.last_forage_coord = Some(coord);
+                    }
+                    break;
+                }
+            }
+            "Gather Wood" => {
+                if inventory.wood_space() <= 0.0 {
+                    continue;
+                }
+
+                for (tile, mut state) in &mut regions {
+                    if tile.coord != coord {
+                        continue;
+                    }
+
+                    let harvest = (0.45 + (1.0 - needs.safety) * 0.7) * delta_days;
+                    let taken = harvest
+                        .min((state.tree_biomass - 0.2).max(0.0))
+                        .min(inventory.wood_space())
+                        .max(0.0);
+                    state.tree_biomass -= taken;
+                    inventory.wood += taken;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn transfer_home_stockpiles(
+    clock: Res<SimulationClock>,
+    mut commands: Commands,
+    mut writer: MessageWriter<LogEvent>,
+    mut npcs: Query<(&Npc, &Transform, &NpcHome, &mut Inventory), With<Npc>>,
+    mut shelters: Query<(Entity, Option<&mut ShelterStockpile>, &Transform), With<Shelter>>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (npc, npc_transform, home, mut inventory) in &mut npcs {
+        let carried_before = inventory.food + inventory.wood;
+        let Some(home_entity) = home.shelter else {
+            continue;
+        };
+        let Ok((shelter_entity, stockpile, shelter_transform)) = shelters.get_mut(home_entity)
+        else {
+            continue;
+        };
+        let Some(mut stockpile) = stockpile else {
+            commands
+                .entity(shelter_entity)
+                .insert(ShelterStockpile::default());
+            continue;
+        };
+
+        let npc_pos = npc_transform.translation.truncate();
+        let shelter_pos = shelter_transform.translation.truncate();
+        if npc_pos.distance(shelter_pos) > 30.0 {
+            continue;
+        }
+
+        let mut deposited = false;
+
+        if inventory.food > 0.05 && stockpile.food < stockpile.max_food {
+            let moved = (0.9 * delta_days)
+                .min(inventory.food)
+                .min((stockpile.max_food - stockpile.food).max(0.0));
+            if moved > 0.0 {
+                inventory.food -= moved;
+                stockpile.food += moved;
+                deposited = true;
+            }
+        }
+
+        if inventory.wood > 0.05 && stockpile.wood < stockpile.max_wood {
+            let moved = (0.9 * delta_days)
+                .min(inventory.wood)
+                .min((stockpile.max_wood - stockpile.wood).max(0.0));
+            if moved > 0.0 {
+                inventory.wood -= moved;
+                stockpile.wood += moved;
+                deposited = true;
+            }
+        }
+
+        if deposited && carried_before > 0.2 && (inventory.food + inventory.wood) <= 0.02 {
+            writer.write(LogEvent::new(
+                LogEventKind::Discovery,
+                format!(
+                    "{} stocked supplies (F {:.1}, W {:.1})",
+                    npc.name, stockpile.food, stockpile.wood
+                ),
+            ));
+        }
+    }
+}
+
+fn withdraw_home_food(
+    clock: Res<SimulationClock>,
+    mut commands: Commands,
+    mut npcs: Query<(&Transform, &Needs, &NpcHome, &mut Inventory), With<Npc>>,
+    mut shelters: Query<(Entity, Option<&mut ShelterStockpile>, &Transform), With<Shelter>>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (npc_transform, needs, home, mut inventory) in &mut npcs {
+        if needs.hunger < 0.45 || inventory.food > 0.4 || inventory.food_space() <= 0.0 {
+            continue;
+        }
+
+        let Some(home_entity) = home.shelter else {
+            continue;
+        };
+        let Ok((shelter_entity, stockpile, shelter_transform)) = shelters.get_mut(home_entity)
+        else {
+            continue;
+        };
+        let Some(mut stockpile) = stockpile else {
+            commands
+                .entity(shelter_entity)
+                .insert(ShelterStockpile::default());
+            continue;
+        };
+
+        let npc_pos = npc_transform.translation.truncate();
+        let shelter_pos = shelter_transform.translation.truncate();
+        if npc_pos.distance(shelter_pos) > 30.0 {
+            continue;
+        }
+
+        let moved = (0.9 * delta_days)
+            .min(stockpile.food)
+            .min(inventory.food_space());
+        if moved > 0.0 {
+            stockpile.food -= moved;
+            inventory.food += moved;
+        }
+    }
+}
+
+fn consume_carried_food(
+    clock: Res<SimulationClock>,
+    mut npcs: Query<(&mut Needs, &mut Inventory), With<Npc>>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (mut needs, mut inventory) in &mut npcs {
+        if inventory.food <= 0.0 || needs.hunger <= 0.02 {
+            continue;
+        }
+
+        let appetite = (0.26 + needs.hunger * 0.7) * delta_days;
+        let eaten = appetite.min(inventory.food);
+        if eaten > 0.0 {
+            inventory.food -= eaten;
+            needs.hunger = (needs.hunger - eaten * 1.35).max(0.0);
+            needs.fatigue = (needs.fatigue - eaten * 0.12).max(0.0);
         }
     }
 }
@@ -324,18 +629,24 @@ fn apply_shelter_comfort(
 
 fn repair_npc_shelters(
     clock: Res<SimulationClock>,
-    settings: Res<MapSettings>,
+    mut commands: Commands,
     mut writer: MessageWriter<LogEvent>,
-    mut npcs: Query<(&Npc, &Transform, &NpcIntent, &NpcHome, &mut Needs)>,
-    mut shelters: Query<(&mut Shelter, &Transform)>,
-    mut regions: Query<(&RegionTile, &mut RegionState)>,
+    mut npcs: Query<(
+        &Npc,
+        &Transform,
+        &NpcIntent,
+        &NpcHome,
+        &mut Needs,
+        &mut Inventory,
+    )>,
+    mut shelters: Query<(&mut Shelter, Option<&mut ShelterStockpile>, &Transform), With<Shelter>>,
 ) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
         return;
     }
 
-    for (npc, npc_transform, intent, home, mut needs) in &mut npcs {
+    for (npc, npc_transform, intent, home, mut needs, mut inventory) in &mut npcs {
         if intent.label != "Repair Shelter" {
             continue;
         }
@@ -343,7 +654,14 @@ fn repair_npc_shelters(
         let Some(shelter_entity) = home.shelter else {
             continue;
         };
-        let Ok((mut shelter, shelter_transform)) = shelters.get_mut(shelter_entity) else {
+        let Ok((mut shelter, stockpile, shelter_transform)) = shelters.get_mut(shelter_entity)
+        else {
+            continue;
+        };
+        let Some(mut stockpile) = stockpile else {
+            commands
+                .entity(shelter_entity)
+                .insert(ShelterStockpile::default());
             continue;
         };
 
@@ -358,22 +676,23 @@ fn repair_npc_shelters(
             continue;
         }
 
-        let coord = settings.tile_coord_for_position(shelter_pos);
+        let effort = (0.16 + (1.0 - needs.fatigue) * 0.10) * delta_days;
         let mut spent = 0.0f32;
-        for (tile, mut state) in &mut regions {
-            if tile.coord != coord {
-                continue;
-            }
 
-            let effort = (0.12 + (1.0 - needs.fatigue) * 0.08) * delta_days;
-            let available = (state.tree_biomass - 0.25).max(0.0);
-            spent = available.min(effort).max(0.0);
-            state.tree_biomass -= spent;
-            break;
+        if stockpile.wood > 0.0 {
+            let taken = effort.min(stockpile.wood).max(0.0);
+            stockpile.wood -= taken;
+            spent += taken;
+        }
+
+        if spent < effort && inventory.wood > 0.0 {
+            let taken = (effort - spent).min(inventory.wood).max(0.0);
+            inventory.wood -= taken;
+            spent += taken;
         }
 
         if spent > 0.0 {
-            shelter.integrity = (shelter.integrity + spent * 1.4).min(1.0);
+            shelter.integrity = (shelter.integrity + spent * 1.2).min(1.0);
             needs.safety = (needs.safety + spent * 0.18).min(1.0);
             if shelter.integrity >= 0.98 {
                 writer.write(LogEvent::new(
@@ -387,7 +706,6 @@ fn repair_npc_shelters(
 
 fn build_npc_shelters(
     mut commands: Commands,
-    settings: Res<MapSettings>,
     mut writer: MessageWriter<LogEvent>,
     mut npcs: Query<
         (
@@ -397,13 +715,13 @@ fn build_npc_shelters(
             &mut Needs,
             &NpcIntent,
             &mut NpcHome,
+            &mut Inventory,
         ),
         With<Npc>,
     >,
     shelters: Query<&Transform, With<Shelter>>,
-    mut regions: Query<(&RegionTile, &mut RegionState)>,
 ) {
-    for (entity, npc, transform, mut needs, intent, mut home) in &mut npcs {
+    for (entity, npc, transform, mut needs, intent, mut home, mut inventory) in &mut npcs {
         if intent.label != "Build Shelter" {
             continue;
         }
@@ -417,39 +735,38 @@ fn build_npc_shelters(
             continue;
         }
 
-        let coord = settings.tile_coord_for_position(pos);
-        for (tile, mut state) in &mut regions {
-            if tile.coord != coord || state.tree_biomass < 1.0 {
-                continue;
-            }
-
-            state.tree_biomass -= 1.0;
-            let shelter_entity = commands
-                .spawn((
-                    Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
-                    Transform::from_xyz(pos.x + 10.0, pos.y - 4.0, 1.8),
-                    Shelter {
-                        integrity: 1.0,
-                        safety_bonus: 0.25,
-                    },
-                ))
-                .id();
-
-            if home.shelter.is_none() {
-                home.shelter = Some(shelter_entity);
-            }
-
-            needs.safety = (needs.safety + 0.18).min(1.0);
-            writer.write(LogEvent::new(
-                LogEventKind::Construction,
-                format!("{} built a shelter", npc.name),
-            ));
-            commands.entity(entity).insert(NpcIntent {
-                label: "Rest".to_string(),
-                heading: Vec2::ZERO,
-            });
-            break;
+        let build_cost = 1.1;
+        if inventory.wood < build_cost {
+            needs.safety = (needs.safety + 0.01).min(1.0);
+            continue;
         }
+
+        inventory.wood -= build_cost;
+        let shelter_entity = commands
+            .spawn((
+                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
+                Transform::from_xyz(pos.x + 10.0, pos.y - 4.0, 1.8),
+                Shelter {
+                    integrity: 1.0,
+                    safety_bonus: 0.25,
+                },
+                ShelterStockpile::default(),
+            ))
+            .id();
+
+        if home.shelter.is_none() {
+            home.shelter = Some(shelter_entity);
+        }
+
+        needs.safety = (needs.safety + 0.18).min(1.0);
+        writer.write(LogEvent::new(
+            LogEventKind::Construction,
+            format!("{} built a shelter", npc.name),
+        ));
+        commands.entity(entity).insert(NpcIntent {
+            label: "Rest".to_string(),
+            heading: Vec2::ZERO,
+        });
     }
 }
 

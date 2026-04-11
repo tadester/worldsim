@@ -1,5 +1,6 @@
 pub mod animal;
 pub mod decisions;
+pub mod inventory;
 pub mod memory;
 pub mod needs;
 pub mod npc;

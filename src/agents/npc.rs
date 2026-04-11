@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::agents::decisions::NpcIntent;
+use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::relationships::Relationships;
@@ -44,6 +45,7 @@ pub struct NpcBundle {
     pub relationships: Relationships,
     pub intent: NpcIntent,
     pub home: NpcHome,
+    pub inventory: Inventory,
     pub mana_reservoir: ManaReservoir,
     pub mana_style: ManaStorageStyle,
     pub mana_practice: ManaPractice,
@@ -78,6 +80,7 @@ impl NpcBundle {
             relationships: Relationships::default(),
             intent: NpcIntent::default(),
             home: NpcHome::default(),
+            inventory: Inventory::default(),
             mana_reservoir,
             mana_style,
             mana_practice: ManaPractice::default(),

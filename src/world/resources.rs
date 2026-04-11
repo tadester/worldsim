@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
+use crate::agents::inventory::Inventory;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{RegionState, RegionTile};
@@ -24,6 +25,25 @@ pub enum TreeStage {
 pub struct Shelter {
     pub integrity: f32,
     pub safety_bonus: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ShelterStockpile {
+    pub food: f32,
+    pub wood: f32,
+    pub max_food: f32,
+    pub max_wood: f32,
+}
+
+impl Default for ShelterStockpile {
+    fn default() -> Self {
+        Self {
+            food: 0.0,
+            wood: 0.0,
+            max_food: 12.0,
+            max_wood: 12.0,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -53,6 +73,10 @@ pub struct WorldStats {
     pub avg_temperature: f32,
     pub total_forage: f32,
     pub total_tree_biomass: f32,
+    pub total_food_carried: f32,
+    pub total_wood_carried: f32,
+    pub total_food_stockpiled: f32,
+    pub total_wood_stockpiled: f32,
 }
 
 pub struct WorldResourcesPlugin;
@@ -62,6 +86,7 @@ impl Plugin for WorldResourcesPlugin {
         app.init_resource::<WorldStats>().add_systems(
             Update,
             (
+                attach_shelter_stockpiles,
                 attach_tree_visuals,
                 sync_tree_visuals,
                 attach_shelter_visuals,
@@ -71,6 +96,15 @@ impl Plugin for WorldResourcesPlugin {
                 update_world_stats,
             ),
         );
+    }
+}
+
+fn attach_shelter_stockpiles(
+    mut commands: Commands,
+    shelters: Query<Entity, (Added<Shelter>, Without<ShelterStockpile>)>,
+) {
+    for entity in &shelters {
+        commands.entity(entity).insert(ShelterStockpile::default());
     }
 }
 
@@ -250,6 +284,8 @@ fn update_world_stats(
     animals: Query<&Animal>,
     npcs: Query<&crate::agents::npc::Npc>,
     shelters: Query<&Shelter>,
+    shelter_stockpiles: Query<&ShelterStockpile>,
+    inventories: Query<&Inventory>,
     regions: Query<(&RegionTile, &RegionState)>,
 ) {
     let (mana_total, animal_capacity_total, tree_capacity_total, temperature_total, tile_count) =
@@ -279,4 +315,8 @@ fn update_world_stats(
     stats.avg_temperature = temperature_total / divisor;
     stats.total_forage = total_forage;
     stats.total_tree_biomass = total_tree_biomass;
+    stats.total_food_carried = inventories.iter().map(|inv| inv.food).sum();
+    stats.total_wood_carried = inventories.iter().map(|inv| inv.wood).sum();
+    stats.total_food_stockpiled = shelter_stockpiles.iter().map(|pile| pile.food).sum();
+    stats.total_wood_stockpiled = shelter_stockpiles.iter().map(|pile| pile.wood).sum();
 }
