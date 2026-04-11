@@ -2,6 +2,13 @@ use bevy::prelude::*;
 
 use crate::systems::simulation::SimulationStep;
 
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub day: f32,
+    pub kind: LogEventKind,
+    pub message: String,
+}
+
 #[derive(Message, Debug, Clone)]
 pub struct LogEvent {
     pub kind: LogEventKind,
@@ -23,7 +30,7 @@ pub enum LogEventKind {
 
 #[derive(Resource, Default)]
 pub struct EventLog {
-    pub entries: Vec<String>,
+    pub entries: Vec<LogEntry>,
     pub max_entries: usize,
 }
 
@@ -46,15 +53,11 @@ fn collect_log_events(
     mut log: ResMut<EventLog>,
 ) {
     for event in events.read() {
-        let label = match event.kind {
-            LogEventKind::Birth => "Birth",
-            LogEventKind::Death => "Death",
-            LogEventKind::Discovery => "Discovery",
-        };
-        log.entries.push(format!(
-            "[day {:.2}] {label}: {}",
-            step.elapsed_days, event.message
-        ));
+        log.entries.push(LogEntry {
+            day: step.elapsed_days,
+            kind: event.kind,
+            message: event.message.clone(),
+        });
     }
 
     if log.entries.len() > log.max_entries {

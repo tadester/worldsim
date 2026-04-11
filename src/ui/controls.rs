@@ -13,7 +13,7 @@ impl Plugin for ControlsUiPlugin {
 
 fn spawn_controls_hint(mut commands: Commands) {
     commands.spawn((
-        Text::new("Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = hard skip"),
+        Text::new("Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = hard skip | Tab = cycle entity"),
         TextFont::from_font_size(14.0),
         TextColor(Color::srgb(0.8, 0.86, 0.95)),
         Node {
