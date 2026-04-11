@@ -29,6 +29,18 @@ pub struct Pregnancy {
     pub offspring_speed: f32,
 }
 
+#[derive(Component)]
+struct AnimalBody;
+
+#[derive(Component)]
+struct AnimalHead;
+
+#[derive(Component)]
+struct AnimalLeg;
+
+#[derive(Component)]
+struct AnimalEar;
+
 #[derive(Bundle)]
 pub struct AnimalBundle {
     pub sprite: Sprite,
@@ -40,7 +52,7 @@ pub struct AnimalBundle {
 impl AnimalBundle {
     pub fn new(position: Vec2, health: f32, speed: f32) -> Self {
         Self {
-            sprite: Sprite::from_color(Color::srgb(0.92, 0.80, 0.26), Vec2::splat(12.0)),
+            sprite: Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
             transform: Transform::from_xyz(position.x, position.y, 3.0),
             animal: Animal {
                 health,
@@ -66,7 +78,104 @@ pub struct AnimalPlugin;
 
 impl Plugin for AnimalPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animal_wander, animal_forage).chain());
+        app.add_systems(
+            Update,
+            (
+                attach_animal_visuals,
+                sync_animal_visuals,
+                (animal_wander, animal_forage).chain(),
+            ),
+        );
+    }
+}
+
+fn attach_animal_visuals(mut commands: Commands, animals: Query<Entity, Added<Animal>>) {
+    for entity in &animals {
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.69, 0.56, 0.24), Vec2::new(18.0, 10.0)),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+                AnimalBody,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.78, 0.66, 0.32), Vec2::new(8.0, 7.0)),
+                Transform::from_xyz(9.0, 2.0, 0.2),
+                AnimalHead,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.42, 0.27, 0.11), Vec2::new(2.0, 8.0)),
+                Transform::from_xyz(-5.0, -7.0, 0.0),
+                AnimalLeg,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.42, 0.27, 0.11), Vec2::new(2.0, 8.0)),
+                Transform::from_xyz(4.0, -7.0, 0.0),
+                AnimalLeg,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.89, 0.80, 0.55), Vec2::new(2.0, 3.0)),
+                Transform::from_xyz(11.0, 6.0, 0.3),
+                AnimalEar,
+            ));
+        });
+    }
+}
+
+fn sync_animal_visuals(
+    animals: Query<(&Animal, &Children), Changed<Animal>>,
+    mut bodies: Query<(&mut Sprite, &mut Transform), With<AnimalBody>>,
+    mut heads: Query<(&mut Sprite, &mut Transform), (With<AnimalHead>, Without<AnimalBody>)>,
+    mut legs: Query<&mut Transform, (With<AnimalLeg>, Without<AnimalBody>, Without<AnimalHead>)>,
+    mut ears: Query<
+        (&mut Sprite, &mut Transform),
+        (With<AnimalEar>, Without<AnimalBody>, Without<AnimalHead>),
+    >,
+) {
+    for (animal, children) in &animals {
+        let scale = match animal.life_stage {
+            AnimalLifeStage::Juvenile => 0.8,
+            AnimalLifeStage::Adult => 1.0,
+            AnimalLifeStage::Elder => 1.1,
+        };
+        let body_color = if animal.hunger > 0.75 {
+            Color::srgb(0.59, 0.47, 0.21)
+        } else {
+            Color::srgb(0.69, 0.56, 0.24)
+        };
+        let head_color = if animal.energy < 14.0 {
+            Color::srgb(0.68, 0.57, 0.30)
+        } else {
+            Color::srgb(0.78, 0.66, 0.32)
+        };
+
+        for child in children.iter() {
+            if let Ok((mut sprite, mut transform)) = bodies.get_mut(child) {
+                sprite.color = body_color;
+                sprite.custom_size = Some(Vec2::new(18.0 * scale, 10.0 * scale));
+                transform.translation.y = if animal.hunger > 0.8 { -0.5 } else { 0.0 };
+            }
+
+            if let Ok((mut sprite, mut transform)) = heads.get_mut(child) {
+                sprite.color = head_color;
+                sprite.custom_size = Some(Vec2::new(8.0 * scale, 7.0 * scale));
+                transform.translation.x = 9.0 * scale;
+                transform.translation.y = 2.0 * scale;
+            }
+
+            if let Ok(mut transform) = legs.get_mut(child) {
+                transform.scale.y = if animal.energy < 10.0 { 0.85 } else { 1.0 };
+            }
+
+            if let Ok((mut sprite, mut transform)) = ears.get_mut(child) {
+                sprite.color = if animal.life_stage == AnimalLifeStage::Juvenile {
+                    Color::srgb(0.94, 0.86, 0.66)
+                } else {
+                    Color::srgb(0.89, 0.80, 0.55)
+                };
+                transform.translation.x = 11.0 * scale;
+                transform.translation.y = 6.0 * scale;
+            }
+        }
     }
 }
 

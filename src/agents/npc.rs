@@ -8,6 +8,18 @@ use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
 use crate::magic::storage::{ManaPractice, ManaStorageStyle};
 
+#[derive(Component)]
+struct NpcTorso;
+
+#[derive(Component)]
+struct NpcHead;
+
+#[derive(Component)]
+struct NpcLeg;
+
+#[derive(Component)]
+struct NpcAura;
+
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
     pub name: String,
@@ -40,7 +52,7 @@ impl NpcBundle {
         mana_style: ManaStorageStyle,
     ) -> Self {
         Self {
-            sprite: Sprite::from_color(Color::srgb(0.28, 0.55, 0.94), Vec2::splat(14.0)),
+            sprite: Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
             transform: Transform::from_xyz(position.x, position.y, 4.0),
             npc: Npc {
                 name,
@@ -69,5 +81,85 @@ impl NpcBundle {
 pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, (attach_npc_visuals, sync_npc_visuals));
+    }
+}
+
+fn attach_npc_visuals(mut commands: Commands, npcs: Query<Entity, Added<Npc>>) {
+    for entity in &npcs {
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.17, 0.28, 0.58), Vec2::new(10.0, 14.0)),
+                Transform::from_xyz(0.0, -1.0, 0.1),
+                NpcTorso,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.92, 0.82, 0.68), Vec2::new(8.0, 8.0)),
+                Transform::from_xyz(0.0, 10.0, 0.2),
+                NpcHead,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.23, 0.18, 0.14), Vec2::new(2.0, 8.0)),
+                Transform::from_xyz(-3.0, -11.0, 0.0),
+                NpcLeg,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.23, 0.18, 0.14), Vec2::new(2.0, 8.0)),
+                Transform::from_xyz(3.0, -11.0, 0.0),
+                NpcLeg,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.35, 0.72, 0.92, 0.18), Vec2::new(20.0, 24.0)),
+                Transform::from_xyz(0.0, 2.0, -0.1),
+                NpcAura,
+            ));
+        });
+    }
+}
+
+fn sync_npc_visuals(
+    npcs: Query<(&Npc, &ManaReservoir, &ManaPractice, &Children), Changed<ManaReservoir>>,
+    mut torsos: Query<&mut Sprite, With<NpcTorso>>,
+    mut heads: Query<&mut Sprite, (With<NpcHead>, Without<NpcTorso>)>,
+    mut auras: Query<
+        (&mut Sprite, &mut Transform),
+        (With<NpcAura>, Without<NpcTorso>, Without<NpcHead>),
+    >,
+) {
+    for (npc, reservoir, practice, children) in &npcs {
+        let fill_ratio = if reservoir.capacity <= 0.0 {
+            0.0
+        } else {
+            reservoir.stored / reservoir.capacity
+        };
+
+        for child in children.iter() {
+            if let Ok(mut sprite) = torsos.get_mut(child) {
+                sprite.color = if fill_ratio > 0.65 {
+                    Color::srgb(0.20, 0.35, 0.76)
+                } else {
+                    Color::srgb(0.17, 0.28, 0.58)
+                };
+            }
+
+            if let Ok(mut sprite) = heads.get_mut(child) {
+                sprite.color = if npc.health < 35.0 {
+                    Color::srgb(0.84, 0.72, 0.60)
+                } else {
+                    Color::srgb(0.92, 0.82, 0.68)
+                };
+            }
+
+            if let Ok((mut sprite, mut transform)) = auras.get_mut(child) {
+                let alpha = (0.08 + fill_ratio * 0.22).min(0.35);
+                sprite.color = if reservoir.stability < 0.45 || practice.backlash > 0.0 {
+                    Color::srgba(0.92, 0.42, 0.28, alpha)
+                } else {
+                    Color::srgba(0.35, 0.72, 0.92, alpha)
+                };
+                transform.scale = Vec3::splat(0.9 + fill_ratio * 0.35);
+            }
+        }
+    }
 }

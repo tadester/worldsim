@@ -28,7 +28,7 @@ fn seed_world_entities(
         if (tile.coord.x + tile.coord.y) % 3 == 0 {
             let offset = seeded_offset(tree_index as i32, settings.tile_size * 0.2);
             commands.spawn((
-                Sprite::from_color(Color::srgb(0.18, 0.72, 0.26), Vec2::splat(14.0)),
+                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
                 Transform::from_xyz(
                     transform.translation.x + offset.x,
                     transform.translation.y + offset.y,
