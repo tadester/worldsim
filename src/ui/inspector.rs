@@ -7,7 +7,7 @@ use crate::agents::needs::Needs;
 use crate::agents::npc::Npc;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::world::resources::{Tree, TreeStage};
+use crate::world::resources::{Shelter, Tree, TreeStage};
 
 #[derive(Resource, Default)]
 struct SelectedEntity {
@@ -82,6 +82,7 @@ fn cycle_selected_entity(
 fn update_inspector(
     selected: Res<SelectedEntity>,
     trees: Query<(&Tree, &Transform, Option<&ManaReservoir>)>,
+    shelters: Query<(&Shelter, &Transform)>,
     animals: Query<(&Animal, &Lifecycle, &Transform)>,
     npcs: Query<(
         &Npc,
@@ -102,6 +103,14 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
                 mana.map(|m| m.stored).unwrap_or(0.0),
+            )
+        } else if let Ok((shelter, transform)) = shelters.get(entity) {
+            format!(
+                "Type: Shelter\nIntegrity: {:.2}\nSafety bonus: {:.2}\nPos: {:.0}, {:.0}",
+                shelter.integrity,
+                shelter.safety_bonus,
+                transform.translation.x,
+                transform.translation.y,
             )
         } else if let Ok((animal, lifecycle, transform)) = animals.get(entity) {
             format!(

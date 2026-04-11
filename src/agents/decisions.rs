@@ -6,6 +6,7 @@ use crate::agents::npc::Npc;
 use crate::agents::relationships::Relationships;
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
+use crate::world::resources::Shelter;
 
 #[derive(Component, Debug, Clone)]
 pub struct NpcIntent {
@@ -26,7 +27,15 @@ pub struct DecisionPlugin;
 
 impl Plugin for DecisionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (evaluate_npc_intents, apply_npc_intents).chain());
+        app.add_systems(
+            Update,
+            (
+                evaluate_npc_intents,
+                apply_npc_intents,
+                build_npc_shelters.after(apply_npc_intents),
+            )
+                .chain(),
+        );
     }
 }
 
@@ -34,6 +43,7 @@ fn evaluate_npc_intents(
     settings: Res<MapSettings>,
     regions: Query<(&RegionTile, &RegionState)>,
     npc_positions: Query<(Entity, &Transform), With<Npc>>,
+    shelters: Query<&Transform, With<Shelter>>,
     mut npcs: Query<(
         Entity,
         &Transform,
@@ -56,6 +66,7 @@ fn evaluate_npc_intents(
         let mut current_forage = 0.0;
         let mut best_forage = -1.0;
         let mut best_forage_coord = current_coord;
+        let mut local_biomass = 0.0;
         let mut safest_score = -1.0;
         let mut safest_coord = current_coord;
         let mut most_interesting = -1.0;
@@ -64,6 +75,7 @@ fn evaluate_npc_intents(
         for (tile, state) in &regions {
             if tile.coord == current_coord {
                 current_forage = state.forage;
+                local_biomass = state.tree_biomass;
             }
 
             if state.forage > best_forage {
@@ -98,13 +110,27 @@ fn evaluate_npc_intents(
         let social_utility = (1.0 - needs.social) * relationships.social_drive;
         let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear);
         let curiosity_utility = needs.curiosity * npc.curiosity * 0.8;
+        let shelter_nearby = shelters
+            .iter()
+            .any(|shelter_transform| shelter_transform.translation.truncate().distance(pos) < 42.0);
+        let build_utility = if needs.safety < 0.45 && local_biomass > 0.9 && !shelter_nearby {
+            (0.55 - needs.safety) + local_biomass * 0.1
+        } else {
+            0.0
+        };
 
         let (label, target) = if hunger_utility >= social_utility
             && hunger_utility >= safety_utility
+            && hunger_utility >= build_utility
             && hunger_utility >= curiosity_utility
         {
             let remembered = memory.last_forage_coord.unwrap_or(best_forage_coord);
             ("Forage".to_string(), tile_center(&settings, remembered))
+        } else if build_utility >= safety_utility
+            && build_utility >= social_utility
+            && build_utility >= curiosity_utility
+        {
+            ("Build Shelter".to_string(), pos)
         } else if safety_utility >= social_utility && safety_utility >= curiosity_utility {
             let remembered_safe = memory
                 .last_safe_position
@@ -165,11 +191,56 @@ fn apply_npc_intents(
                 needs.safety = (needs.safety + delta_seconds * 0.05).min(1.0);
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.01).min(1.0);
             }
+            "Build Shelter" => {
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.02).min(1.0);
+            }
             "Explore" => {
                 needs.curiosity = (needs.curiosity - delta_seconds * 0.03).max(0.1);
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.015).min(1.0);
             }
             _ => {}
+        }
+    }
+}
+
+fn build_npc_shelters(
+    mut commands: Commands,
+    settings: Res<MapSettings>,
+    mut npcs: Query<(&Transform, &mut Needs, &NpcIntent), With<Npc>>,
+    shelters: Query<&Transform, With<Shelter>>,
+    mut regions: Query<(&RegionTile, &mut RegionState)>,
+) {
+    for (transform, mut needs, intent) in &mut npcs {
+        if intent.label != "Build Shelter" {
+            continue;
+        }
+
+        let pos = transform.translation.truncate();
+        if shelters
+            .iter()
+            .any(|shelter_transform| shelter_transform.translation.truncate().distance(pos) < 42.0)
+        {
+            needs.safety = (needs.safety + 0.02).min(1.0);
+            continue;
+        }
+
+        let coord = settings.tile_coord_for_position(pos);
+        for (tile, mut state) in &mut regions {
+            if tile.coord != coord || state.tree_biomass < 1.0 {
+                continue;
+            }
+
+            state.tree_biomass -= 1.0;
+            commands.spawn((
+                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
+                Transform::from_xyz(pos.x + 10.0, pos.y - 4.0, 1.8),
+                Shelter {
+                    integrity: 1.0,
+                    safety_bonus: 0.25,
+                },
+            ));
+            needs.safety = (needs.safety + 0.18).min(1.0);
+            break;
         }
     }
 }

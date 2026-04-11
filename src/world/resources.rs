@@ -20,6 +20,12 @@ pub enum TreeStage {
     Mature,
 }
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Shelter {
+    pub integrity: f32,
+    pub safety_bonus: f32,
+}
+
 #[derive(Component)]
 struct TreeTrunk;
 
@@ -29,11 +35,18 @@ struct TreeCanopy;
 #[derive(Component)]
 struct TreeCanopyAccent;
 
+#[derive(Component)]
+struct ShelterBase;
+
+#[derive(Component)]
+struct ShelterRoof;
+
 #[derive(Resource, Default)]
 pub struct WorldStats {
     pub trees: usize,
     pub animals: usize,
     pub npcs: usize,
+    pub shelters: usize,
     pub avg_mana_density: f32,
     pub avg_animal_capacity: f32,
     pub avg_tree_capacity: f32,
@@ -51,10 +64,28 @@ impl Plugin for WorldResourcesPlugin {
             (
                 attach_tree_visuals,
                 sync_tree_visuals,
+                attach_shelter_visuals,
                 regrow_region_resources,
                 update_world_stats,
             ),
         );
+    }
+}
+
+fn attach_shelter_visuals(mut commands: Commands, shelters: Query<Entity, Added<Shelter>>) {
+    for entity in &shelters {
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.49, 0.36, 0.22), Vec2::new(18.0, 10.0)),
+                Transform::from_xyz(0.0, -3.0, 0.1),
+                ShelterBase,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.30, 0.17, 0.11), Vec2::new(22.0, 8.0)),
+                Transform::from_xyz(0.0, 4.0, 0.2).with_rotation(Quat::from_rotation_z(0.08)),
+                ShelterRoof,
+            ));
+        });
     }
 }
 
@@ -172,6 +203,7 @@ fn update_world_stats(
     trees: Query<&Tree>,
     animals: Query<&Animal>,
     npcs: Query<&crate::agents::npc::Npc>,
+    shelters: Query<&Shelter>,
     regions: Query<(&RegionTile, &RegionState)>,
 ) {
     let (mana_total, animal_capacity_total, tree_capacity_total, temperature_total, tile_count) =
@@ -193,6 +225,7 @@ fn update_world_stats(
     stats.trees = trees.iter().count();
     stats.animals = animals.iter().count();
     stats.npcs = npcs.iter().count();
+    stats.shelters = shelters.iter().count();
     let divisor = tile_count.max(1) as f32;
     stats.avg_mana_density = mana_total / divisor;
     stats.avg_animal_capacity = animal_capacity_total / divisor;
