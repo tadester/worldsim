@@ -41,5 +41,7 @@ fn decay_needs(clock: Res<SimulationClock>, mut needs_query: Query<&mut Needs>) 
         needs.thirst = (needs.thirst + delta_days * 0.07).min(1.0);
         needs.fatigue = (needs.fatigue + delta_days * 0.03).min(1.0);
         needs.social = (needs.social - delta_days * 0.01).max(0.0);
+        needs.safety = (needs.safety - delta_days * 0.005).clamp(0.0, 1.0);
+        needs.curiosity = (needs.curiosity + delta_days * 0.006).clamp(0.1, 1.0);
     }
 }

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::agents::decisions::NpcIntent;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::relationships::Relationships;
@@ -12,6 +13,7 @@ pub struct Npc {
     pub name: String,
     pub health: f32,
     pub curiosity: f32,
+    pub speed: f32,
 }
 
 #[derive(Bundle)]
@@ -23,6 +25,7 @@ pub struct NpcBundle {
     pub needs: Needs,
     pub memory: Memory,
     pub relationships: Relationships,
+    pub intent: NpcIntent,
     pub mana_reservoir: ManaReservoir,
     pub mana_style: ManaStorageStyle,
 }
@@ -42,6 +45,7 @@ impl NpcBundle {
                 name,
                 health,
                 curiosity: 0.6,
+                speed: 28.0,
             },
             lifecycle: Lifecycle {
                 age_days: 0.0,
@@ -53,6 +57,7 @@ impl NpcBundle {
             needs: Needs::default_humanoid(),
             memory: Memory::default(),
             relationships: Relationships::default(),
+            intent: NpcIntent::default(),
             mana_reservoir,
             mana_style,
         }
