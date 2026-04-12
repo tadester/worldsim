@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use std::collections::HashMap;
 
+use crate::agents::factions::FactionMember;
 use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
@@ -11,6 +12,7 @@ use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile};
+use crate::world::territory::Territory;
 
 #[derive(Component, Debug, Clone)]
 pub struct NpcIntent {
@@ -51,9 +53,15 @@ impl Plugin for DecisionPlugin {
 
 fn evaluate_npc_intents(
     settings: Res<MapSettings>,
-    regions: Query<(&RegionTile, &RegionState)>,
-    npc_positions: Query<(Entity, &Transform), With<Npc>>,
-    shelters: Query<(Entity, &Shelter, Option<&ShelterStockpile>, &Transform)>,
+    regions: Query<(&RegionTile, &RegionState, Option<&Territory>)>,
+    npc_positions: Query<(Entity, &Transform, Option<&FactionMember>), With<Npc>>,
+    shelters: Query<(
+        Entity,
+        &Shelter,
+        Option<&ShelterStockpile>,
+        &Transform,
+        Option<&FactionMember>,
+    )>,
     mut npcs: Query<(
         Entity,
         &Transform,
@@ -64,20 +72,29 @@ fn evaluate_npc_intents(
         &mut NpcIntent,
         &NpcHome,
         &Inventory,
+        Option<&FactionMember>,
     )>,
 ) {
-    let mut region_index: HashMap<IVec2, (RegionTile, RegionState)> = HashMap::new();
+    let mut region_index: HashMap<IVec2, (RegionTile, RegionState, Option<Entity>)> =
+        HashMap::new();
     let mut best_forage = -1.0;
     let mut best_forage_coord = IVec2::ZERO;
+    let mut best_forage_by_faction: HashMap<Entity, (f32, IVec2)> = HashMap::new();
     let mut best_biomass = -1.0;
     let mut best_biomass_coord = IVec2::ZERO;
+    let mut best_biomass_by_faction: HashMap<Entity, (f32, IVec2)> = HashMap::new();
     let mut safest_score = -1.0;
     let mut safest_coord = IVec2::ZERO;
+    let mut safest_by_faction: HashMap<Entity, (f32, IVec2)> = HashMap::new();
     let mut most_interesting = -1.0;
     let mut interesting_coord = IVec2::ZERO;
+    let mut interesting_by_faction: HashMap<Entity, (f32, IVec2)> = HashMap::new();
+    let mut unclaimed_interesting = -1.0;
+    let mut unclaimed_interesting_coord = IVec2::ZERO;
 
-    for (tile, state) in &regions {
-        region_index.insert(tile.coord, (*tile, *state));
+    for (tile, state, territory) in &regions {
+        let owner = territory.and_then(|territory| territory.owner);
+        region_index.insert(tile.coord, (*tile, *state, owner));
 
         if state.forage > best_forage {
             best_forage = state.forage;
@@ -89,10 +106,34 @@ fn evaluate_npc_intents(
             best_biomass_coord = tile.coord;
         }
 
+        if let Some(owner) = owner {
+            let entry = best_forage_by_faction
+                .entry(owner)
+                .or_insert((state.forage, tile.coord));
+            if state.forage > entry.0 {
+                *entry = (state.forage, tile.coord);
+            }
+
+            let entry = best_biomass_by_faction
+                .entry(owner)
+                .or_insert((state.tree_biomass, tile.coord));
+            if state.tree_biomass > entry.0 {
+                *entry = (state.tree_biomass, tile.coord);
+            }
+        }
+
         let safe_score = tile.soil_fertility + state.forage * 0.2 - tile.mana_density * 0.05;
         if safe_score > safest_score {
             safest_score = safe_score;
             safest_coord = tile.coord;
+        }
+        if let Some(owner) = owner {
+            let entry = safest_by_faction
+                .entry(owner)
+                .or_insert((safe_score, tile.coord));
+            if safe_score > entry.0 {
+                *entry = (safe_score, tile.coord);
+            }
         }
 
         let interesting_score = tile.mana_density + tile.temperature * 0.3;
@@ -100,23 +141,56 @@ fn evaluate_npc_intents(
             most_interesting = interesting_score;
             interesting_coord = tile.coord;
         }
+        match owner {
+            Some(owner) => {
+                let entry = interesting_by_faction
+                    .entry(owner)
+                    .or_insert((interesting_score, tile.coord));
+                if interesting_score > entry.0 {
+                    *entry = (interesting_score, tile.coord);
+                }
+            }
+            None => {
+                if interesting_score > unclaimed_interesting {
+                    unclaimed_interesting = interesting_score;
+                    unclaimed_interesting_coord = tile.coord;
+                }
+            }
+        }
     }
 
-    let positions: Vec<(Entity, Vec2)> = npc_positions
+    let positions: Vec<(Entity, Vec2, Option<Entity>)> = npc_positions
         .iter()
-        .map(|(entity, transform)| (entity, transform.translation.truncate()))
+        .map(|(entity, transform, member)| {
+            (
+                entity,
+                transform.translation.truncate(),
+                member.map(|member| member.faction),
+            )
+        })
         .collect();
 
-    for (entity, transform, npc, needs, relationships, mut memory, mut intent, home, inventory) in
-        &mut npcs
+    for (
+        entity,
+        transform,
+        npc,
+        needs,
+        relationships,
+        mut memory,
+        mut intent,
+        home,
+        inventory,
+        member,
+    ) in &mut npcs
     {
         let pos = transform.translation.truncate();
         let current_coord = settings.tile_coord_for_position(pos);
+        let faction = member.map(|member| member.faction);
         let home_shelter = home.shelter.and_then(|shelter_entity| {
             shelters
                 .get(shelter_entity)
                 .ok()
-                .map(|(_, shelter, stockpile, transform)| {
+                .map(|(_, shelter, stockpile, transform, _)| {
                     (
                         *shelter,
                         stockpile.copied(),
@@ -124,6 +198,28 @@ fn evaluate_npc_intents(
                     )
                 })
         });
+        let ally_shelter = if home_shelter.is_none() {
+            faction.and_then(|faction| {
+                shelters
+                    .iter()
+                    .filter(|(_, _, _, _, member)| {
+                        member.map(|member| member.faction) == Some(faction)
+                    })
+                    .min_by(|(_, _, _, a, _), (_, _, _, b, _)| {
+                        pos.distance(a.translation.truncate())
+                            .total_cmp(&pos.distance(b.translation.truncate()))
+                    })
+                    .map(|(_, shelter, stockpile, transform, _)| {
+                        (
+                            *shelter,
+                            stockpile.copied(),
+                            transform.translation.truncate(),
+                        )
+                    })
+            })
+        } else {
+            None
+        };
         let home_position = home_shelter.map(|(_, _, pos)| pos);
         let home_integrity = home_shelter
             .map(|(shelter, _, _)| shelter.integrity.clamp(0.0, 1.0))
@@ -131,47 +227,51 @@ fn evaluate_npc_intents(
         let home_stockpiled_wood = home_shelter
             .and_then(|(_, stockpile, _)| stockpile.map(|pile| pile.wood))
             .unwrap_or(0.0);
+        let ally_position = ally_shelter.map(|(_, _, pos)| pos);
+        let rest_position = home_position.or(ally_position);
+        let rest_integrity = if home_position.is_some() {
+            home_integrity
+        } else {
+            ally_shelter
+                .map(|(shelter, _, _)| (shelter.integrity * 0.85).clamp(0.0, 1.0))
+                .unwrap_or(0.0)
+        };
 
         let (current_forage, local_biomass) = region_index
             .get(&current_coord)
-            .map(|(_, state)| (state.forage, state.tree_biomass))
+            .map(|(_, state, _)| (state.forage, state.tree_biomass))
             .unwrap_or((0.0, 0.0));
 
         if current_forage > 0.5 {
             memory.last_forage_coord = Some(current_coord);
         }
 
-        let nearest_other = positions
-            .iter()
-            .filter(|(other, _)| *other != entity)
-            .min_by(|(_, a), (_, b)| pos.distance(*a).total_cmp(&pos.distance(*b)))
-            .map(|(_, other_pos)| *other_pos);
+        let nearest_same_faction = faction.and_then(|faction| {
+            positions
+                .iter()
+                .filter(|(other, _, other_faction)| {
+                    *other != entity && *other_faction == Some(faction)
+                })
+                .min_by(|(_, a, _), (_, b, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, other_pos, _)| *other_pos)
+        });
+        let nearest_other = nearest_same_faction.or_else(|| {
+            positions
+                .iter()
+                .filter(|(other, _, _)| *other != entity)
+                .min_by(|(_, a, _), (_, b, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, other_pos, _)| *other_pos)
+        });
 
-        let food_ratio = if inventory.max_food <= 0.0 {
-            0.0
-        } else {
-            (inventory.food / inventory.max_food).clamp(0.0, 1.0)
-        };
+        let food_ratio = inventory.food_ratio();
         let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4) * (1.15 - food_ratio * 0.55);
         let social_utility = (1.0 - needs.social) * relationships.social_drive;
         let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear);
         let curiosity_utility = needs.curiosity * npc.curiosity * 0.8;
-        let shelter_nearby = shelters.iter().any(|(_, _, _, shelter_transform)| {
+        let shelter_nearby = shelters.iter().any(|(_, _, _, shelter_transform, _)| {
             shelter_transform.translation.truncate().distance(pos) < 42.0
         });
-        let carrying_ratio = {
-            let food = if inventory.max_food <= 0.0 {
-                0.0
-            } else {
-                (inventory.food / inventory.max_food).clamp(0.0, 1.0)
-            };
-            let wood = if inventory.max_wood <= 0.0 {
-                0.0
-            } else {
-                (inventory.wood / inventory.max_wood).clamp(0.0, 1.0)
-            };
-            (food + wood) * 0.5
-        };
+        let carrying_ratio = inventory.carry_ratio();
         let build_utility = if needs.safety < 0.45
             && local_biomass > 0.9
             && !shelter_nearby
@@ -182,8 +282,10 @@ fn evaluate_npc_intents(
         } else {
             0.0
         };
-        let rest_utility = if home_position.is_some() {
-            needs.fatigue * 1.25 + (1.0 - needs.safety) * 0.25 + home_integrity * 0.15
+        let rest_utility = if rest_position.is_some() {
+            let home_factor = if home_position.is_some() { 1.0 } else { 0.7 };
+            (needs.fatigue * 1.25 + (1.0 - needs.safety) * 0.25 + rest_integrity * 0.15)
+                * home_factor
         } else {
             0.0
         };
@@ -210,6 +312,34 @@ fn evaluate_npc_intents(
             0.0
         };
 
+        let best_forage_for_faction = faction.and_then(|faction| {
+            best_forage_by_faction
+                .get(&faction)
+                .map(|(_, coord)| *coord)
+        });
+        let best_biomass_for_faction = faction.and_then(|faction| {
+            best_biomass_by_faction
+                .get(&faction)
+                .map(|(_, coord)| *coord)
+        });
+        let safest_for_faction = faction
+            .and_then(|faction| safest_by_faction.get(&faction).map(|(_, coord)| *coord))
+            .unwrap_or(safest_coord);
+        let explore_for_faction = faction
+            .and_then(|faction| {
+                interesting_by_faction
+                    .get(&faction)
+                    .map(|(_, coord)| *coord)
+            })
+            .or_else(|| {
+                if unclaimed_interesting > 0.0 {
+                    Some(unclaimed_interesting_coord)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(interesting_coord);
+
         let (label, target) = if rest_utility >= hunger_utility
             && rest_utility >= safety_utility
             && rest_utility >= social_utility
@@ -222,7 +352,7 @@ fn evaluate_npc_intents(
         {
             (
                 "Rest".to_string(),
-                home_position.unwrap_or_else(|| tile_center(&settings, current_coord)),
+                rest_position.unwrap_or_else(|| tile_center(&settings, current_coord)),
             )
         } else if repair_utility >= hunger_utility
             && repair_utility >= safety_utility
@@ -262,7 +392,7 @@ fn evaluate_npc_intents(
             let target_coord = if local_biomass > 0.25 {
                 current_coord
             } else {
-                best_biomass_coord
+                best_biomass_for_faction.unwrap_or(best_biomass_coord)
             };
             (
                 "Gather Wood".to_string(),
@@ -277,7 +407,10 @@ fn evaluate_npc_intents(
             && hunger_utility >= gather_wood_utility
             && hunger_utility >= stockpile_utility
         {
-            let remembered = memory.last_forage_coord.unwrap_or(best_forage_coord);
+            let remembered = memory
+                .last_forage_coord
+                .or(best_forage_for_faction)
+                .unwrap_or(best_forage_coord);
             ("Forage".to_string(), tile_center(&settings, remembered))
         } else if build_utility >= safety_utility
             && build_utility >= social_utility
@@ -291,17 +424,17 @@ fn evaluate_npc_intents(
         } else if safety_utility >= social_utility && safety_utility >= curiosity_utility {
             let remembered_safe = memory
                 .last_safe_position
-                .unwrap_or_else(|| tile_center(&settings, safest_coord));
+                .unwrap_or_else(|| tile_center(&settings, safest_for_faction));
             ("Retreat".to_string(), remembered_safe)
         } else if social_utility >= curiosity_utility {
             (
                 "Socialize".to_string(),
-                nearest_other.unwrap_or_else(|| tile_center(&settings, safest_coord)),
+                nearest_other.unwrap_or_else(|| tile_center(&settings, safest_for_faction)),
             )
         } else {
             (
                 "Explore".to_string(),
-                tile_center(&settings, interesting_coord),
+                tile_center(&settings, explore_for_faction),
             )
         };
 
@@ -514,7 +647,17 @@ fn transfer_home_stockpiles(
 fn withdraw_home_food(
     clock: Res<SimulationClock>,
     mut commands: Commands,
-    mut npcs: Query<(&Transform, &Needs, &NpcHome, &mut Inventory), With<Npc>>,
+    mut npcs: Query<
+        (
+            &Transform,
+            &Needs,
+            &NpcHome,
+            Option<&FactionMember>,
+            &mut Inventory,
+        ),
+        With<Npc>,
+    >,
+    shelter_positions: Query<(Entity, &Transform, Option<&FactionMember>), With<Shelter>>,
     mut shelters: Query<(Entity, Option<&mut ShelterStockpile>, &Transform), With<Shelter>>,
 ) {
     let delta_days = clock.delta_days();
@@ -522,15 +665,34 @@ fn withdraw_home_food(
         return;
     }
 
-    for (npc_transform, needs, home, mut inventory) in &mut npcs {
+    for (npc_transform, needs, home, member, mut inventory) in &mut npcs {
         if needs.hunger < 0.45 || inventory.food > 0.4 || inventory.food_space() <= 0.0 {
             continue;
         }
 
-        let Some(home_entity) = home.shelter else {
+        let mut target_shelter = home.shelter;
+        if target_shelter.is_none() {
+            let Some(faction) = member.map(|member| member.faction) else {
+                continue;
+            };
+            let npc_pos = npc_transform.translation.truncate();
+            target_shelter = shelter_positions
+                .iter()
+                .filter(|(_, _, shelter_member)| {
+                    shelter_member.map(|member| member.faction) == Some(faction)
+                })
+                .min_by(|(_, a, _), (_, b, _)| {
+                    npc_pos
+                        .distance(a.translation.truncate())
+                        .total_cmp(&npc_pos.distance(b.translation.truncate()))
+                })
+                .map(|(entity, _, _)| entity);
+        }
+
+        let Some(target_shelter) = target_shelter else {
             continue;
         };
-        let Ok((shelter_entity, stockpile, shelter_transform)) = shelters.get_mut(home_entity)
+        let Ok((shelter_entity, stockpile, shelter_transform)) = shelters.get_mut(target_shelter)
         else {
             continue;
         };
@@ -583,33 +745,53 @@ fn consume_carried_food(
 
 fn apply_shelter_comfort(
     clock: Res<SimulationClock>,
-    mut npcs: Query<(&Transform, &NpcHome, &mut Needs)>,
-    shelters: Query<(Entity, &Shelter, &Transform)>,
+    mut npcs: Query<(&Transform, &NpcHome, Option<&FactionMember>, &mut Needs)>,
+    shelters: Query<(Entity, &Shelter, &Transform, Option<&FactionMember>)>,
 ) {
     let delta_seconds = clock.delta_seconds();
     if delta_seconds <= 0.0 {
         return;
     }
 
-    for (npc_transform, home, mut needs) in &mut npcs {
+    for (npc_transform, home, member, mut needs) in &mut npcs {
         let pos = npc_transform.translation.truncate();
+        let faction = member.map(|member| member.faction);
 
         let home_shelter = home
             .shelter
             .and_then(|entity| shelters.get(entity).ok())
-            .map(|(_, shelter, transform)| (*shelter, transform.translation.truncate()));
+            .map(|(_, shelter, transform, _)| (*shelter, transform.translation.truncate()));
 
-        let (shelter, shelter_pos, is_home) = if let Some((shelter, shelter_pos)) = home_shelter {
-            (shelter, shelter_pos, true)
-        } else if let Some((_, shelter, transform)) =
-            shelters.iter().min_by(|(_, _, a), (_, _, b)| {
-                pos.distance(a.translation.truncate())
-                    .total_cmp(&pos.distance(b.translation.truncate()))
-            })
+        let (shelter, shelter_pos, is_home, is_friendly) = if let Some((shelter, shelter_pos)) =
+            home_shelter
         {
-            (*shelter, transform.translation.truncate(), false)
+            (shelter, shelter_pos, true, true)
         } else {
-            continue;
+            let friendly = faction.and_then(|faction| {
+                shelters
+                    .iter()
+                    .filter(|(_, _, _, member)| {
+                        member.map(|member| member.faction) == Some(faction)
+                    })
+                    .min_by(|(_, _, a, _), (_, _, b, _)| {
+                        pos.distance(a.translation.truncate())
+                            .total_cmp(&pos.distance(b.translation.truncate()))
+                    })
+                    .map(|(_, shelter, transform, _)| (*shelter, transform.translation.truncate()))
+            });
+
+            if let Some((shelter, shelter_pos)) = friendly {
+                (shelter, shelter_pos, false, true)
+            } else if let Some((_, shelter, transform, _)) =
+                shelters.iter().min_by(|(_, _, a, _), (_, _, b, _)| {
+                    pos.distance(a.translation.truncate())
+                        .total_cmp(&pos.distance(b.translation.truncate()))
+                })
+            {
+                (*shelter, transform.translation.truncate(), false, false)
+            } else {
+                continue;
+            }
         };
 
         let distance = pos.distance(shelter_pos);
@@ -618,7 +800,15 @@ fn apply_shelter_comfort(
         }
 
         let integrity = shelter.integrity.clamp(0.0, 1.0);
-        let comfort = shelter.safety_bonus * integrity * if is_home { 1.4 } else { 0.7 };
+        let comfort = shelter.safety_bonus
+            * integrity
+            * if is_home {
+                1.4
+            } else if is_friendly {
+                0.9
+            } else {
+                0.7
+            };
         let falloff = (1.0 - distance / 48.0).clamp(0.0, 1.0);
         let gain = comfort * falloff * delta_seconds;
 
@@ -716,12 +906,13 @@ fn build_npc_shelters(
             &NpcIntent,
             &mut NpcHome,
             &mut Inventory,
+            Option<&FactionMember>,
         ),
         With<Npc>,
     >,
     shelters: Query<&Transform, With<Shelter>>,
 ) {
-    for (entity, npc, transform, mut needs, intent, mut home, mut inventory) in &mut npcs {
+    for (entity, npc, transform, mut needs, intent, mut home, mut inventory, member) in &mut npcs {
         if intent.label != "Build Shelter" {
             continue;
         }
@@ -742,6 +933,7 @@ fn build_npc_shelters(
         }
 
         inventory.wood -= build_cost;
+        let faction = member.map(|member| member.faction);
         let shelter_entity = commands
             .spawn((
                 Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
@@ -753,6 +945,11 @@ fn build_npc_shelters(
                 ShelterStockpile::default(),
             ))
             .id();
+        if let Some(faction) = faction {
+            commands
+                .entity(shelter_entity)
+                .insert(FactionMember { faction });
+        }
 
         if home.shelter.is_none() {
             home.shelter = Some(shelter_entity);

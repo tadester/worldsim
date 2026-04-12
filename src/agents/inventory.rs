@@ -27,4 +27,24 @@ impl Inventory {
     pub fn wood_space(&self) -> f32 {
         (self.max_wood - self.wood).max(0.0)
     }
+
+    pub fn food_ratio(&self) -> f32 {
+        if self.max_food <= 0.0 {
+            0.0
+        } else {
+            (self.food / self.max_food).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn wood_ratio(&self) -> f32 {
+        if self.max_wood <= 0.0 {
+            0.0
+        } else {
+            (self.wood / self.max_wood).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn carry_ratio(&self) -> f32 {
+        (self.food_ratio() + self.wood_ratio()) * 0.5
+    }
 }

@@ -1,5 +1,6 @@
 pub mod animal;
 pub mod decisions;
+pub mod factions;
 pub mod inventory;
 pub mod memory;
 pub mod needs;
@@ -9,6 +10,7 @@ pub mod relationships;
 use animal::AnimalPlugin;
 use bevy::prelude::*;
 use decisions::DecisionPlugin;
+use factions::FactionPlugin;
 use memory::MemoryPlugin;
 use needs::NeedsPlugin;
 use npc::NpcPlugin;
@@ -21,6 +23,7 @@ impl Plugin for AgentsPlugin {
         app.add_plugins((
             AnimalPlugin,
             NpcPlugin,
+            FactionPlugin,
             NeedsPlugin,
             MemoryPlugin,
             RelationshipsPlugin,

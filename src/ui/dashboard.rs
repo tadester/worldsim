@@ -1,8 +1,10 @@
 use bevy::prelude::*;
 
+use crate::agents::factions::Faction;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::resources::WorldStats;
+use crate::world::territory::Territory;
 
 #[derive(Component)]
 struct DashboardText;
@@ -54,6 +56,8 @@ fn update_dashboard_text(
     step: Res<SimulationStep>,
     log: Res<EventLog>,
     trends: Res<TrendHistory>,
+    factions: Query<(Entity, &Faction)>,
+    territories: Query<&Territory>,
     mut text_query: Query<&mut Text, With<DashboardText>>,
 ) {
     let latest = log
@@ -95,9 +99,34 @@ fn update_dashboard_text(
         .map(|sample| sample.deaths)
         .unwrap_or(0);
 
+    let mut territory_counts = std::collections::HashMap::<Entity, usize>::new();
+    let mut claimed_tiles = 0usize;
+    let mut contested_tiles = 0usize;
+    let total_tiles = territories.iter().count();
+    for territory in &territories {
+        if territory.contested {
+            contested_tiles += 1;
+        }
+        if let Some(owner) = territory.owner {
+            claimed_tiles += 1;
+            *territory_counts.entry(owner).or_insert(0) += 1;
+        }
+    }
+    let mut faction_split = territory_counts
+        .into_iter()
+        .filter_map(|(entity, count)| {
+            factions
+                .get(entity)
+                .ok()
+                .map(|(_, faction)| (faction, count))
+        })
+        .map(|(faction, count)| format!("{} {}", faction.name, count))
+        .collect::<Vec<_>>();
+    faction_split.sort();
+
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nNPCs: {}\nShelters: {}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
@@ -106,6 +135,14 @@ fn update_dashboard_text(
             stats.animals,
             stats.npcs,
             stats.shelters,
+            claimed_tiles,
+            total_tiles,
+            contested_tiles,
+            if faction_split.is_empty() {
+                "".to_string()
+            } else {
+                format!("\nFactions: {}", faction_split.join(" | "))
+            },
             stats.avg_mana_density,
             stats.avg_animal_capacity,
             stats.avg_tree_capacity,
@@ -154,7 +191,7 @@ fn update_trend_history(
         match entry.kind {
             LogEventKind::Birth => births += 1,
             LogEventKind::Death => deaths += 1,
-            LogEventKind::Discovery | LogEventKind::Construction => {}
+            LogEventKind::Discovery | LogEventKind::Construction | LogEventKind::Territory => {}
         }
     }
 
@@ -179,5 +216,6 @@ fn event_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Death => "Death",
         LogEventKind::Discovery => "Discovery",
         LogEventKind::Construction => "Build",
+        LogEventKind::Territory => "Territory",
     }
 }

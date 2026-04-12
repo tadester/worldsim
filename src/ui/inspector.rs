@@ -2,13 +2,16 @@ use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
 use crate::agents::decisions::NpcIntent;
+use crate::agents::factions::{Faction, FactionMember};
 use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
+use crate::world::map::{MapSettings, RegionLookup};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
+use crate::world::territory::Territory;
 
 #[derive(Resource, Default)]
 struct SelectedEntity {
@@ -86,9 +89,18 @@ fn cycle_selected_entity(
 
 fn update_inspector(
     selected: Res<SelectedEntity>,
+    settings: Res<MapSettings>,
+    lookup: Res<RegionLookup>,
     trees: Query<(&Tree, &Transform, Option<&ManaReservoir>)>,
-    shelters: Query<(&Shelter, Option<&ShelterStockpile>, &Transform)>,
+    shelters: Query<(
+        &Shelter,
+        Option<&ShelterStockpile>,
+        &Transform,
+        Option<&FactionMember>,
+    )>,
     animals: Query<(&Animal, &Lifecycle, &Transform)>,
+    factions: Query<&Faction>,
+    territories: Query<&Territory>,
     npcs: Query<(
         &Npc,
         &Needs,
@@ -98,6 +110,7 @@ fn update_inspector(
         &Inventory,
         &ManaReservoir,
         &Transform,
+        Option<&FactionMember>,
     )>,
     mut query: Query<&mut Text, With<InspectorText>>,
 ) {
@@ -111,7 +124,7 @@ fn update_inspector(
                 transform.translation.y,
                 mana.map(|m| m.stored).unwrap_or(0.0),
             )
-        } else if let Ok((shelter, stockpile, transform)) = shelters.get(entity) {
+        } else if let Ok((shelter, stockpile, transform, member)) = shelters.get(entity) {
             let stockpile_line = stockpile
                 .map(|pile| {
                     format!(
@@ -120,8 +133,13 @@ fn update_inspector(
                     )
                 })
                 .unwrap_or_else(|| "Stockpile: none".to_string());
+            let faction_line = member
+                .and_then(|member| factions.get(member.faction).ok())
+                .map(|faction| format!("Faction: {}", faction.name))
+                .unwrap_or_else(|| "Faction: none".to_string());
             format!(
-                "Type: Shelter\nIntegrity: {:.2}\nSafety bonus: {:.2}\n{}\nPos: {:.0}, {:.0}",
+                "Type: Shelter\n{}\nIntegrity: {:.2}\nSafety bonus: {:.2}\n{}\nPos: {:.0}, {:.0}",
+                faction_line,
                 shelter.integrity,
                 shelter.safety_bonus,
                 stockpile_line,
@@ -138,13 +156,13 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
-        } else if let Ok((npc, needs, memory, intent, home, inventory, mana, transform)) =
+        } else if let Ok((npc, needs, memory, intent, home, inventory, mana, transform, member)) =
             npcs.get(entity)
         {
             let home_line = home
                 .shelter
                 .and_then(|home_entity| shelters.get(home_entity).ok())
-                .map(|(shelter, stockpile, _)| {
+                .map(|(shelter, stockpile, _, _)| {
                     let mut line = format!("Home shelter integrity: {:.2}", shelter.integrity);
                     if let Some(pile) = stockpile {
                         line.push_str(&format!(
@@ -155,10 +173,37 @@ fn update_inspector(
                     line
                 })
                 .unwrap_or_else(|| "Home shelter: none".to_string());
+            let faction_line = member
+                .and_then(|member| factions.get(member.faction).ok())
+                .map(|faction| faction.name.as_str())
+                .unwrap_or("none");
+
+            let coord = settings.tile_coord_for_position(transform.translation.truncate());
+            let territory_line = lookup
+                .by_coord
+                .get(&coord)
+                .and_then(|region| territories.get(*region).ok())
+                .and_then(|territory| {
+                    territory.owner.and_then(|owner| {
+                        factions.get(owner).ok().map(|faction| {
+                            format!(
+                                "{} ({:.2}{})",
+                                faction.name,
+                                territory.control,
+                                if territory.contested { ", contested" } else { "" }
+                            )
+                        })
+                    })
+                })
+                .unwrap_or_else(|| "unclaimed".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nFaction: {}\nTile: {},{}\nTerritory: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
+                faction_line,
+                coord.x,
+                coord.y,
+                territory_line,
                 npc.health,
                 intent.label,
                 needs.hunger,
