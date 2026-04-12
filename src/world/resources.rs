@@ -5,6 +5,7 @@ use crate::agents::inventory::Inventory;
 use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::SimulationClock;
+use crate::world::climate::RegionClimate;
 use crate::world::map::{RegionState, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -73,6 +74,7 @@ pub struct WorldStats {
     pub avg_animal_capacity: f32,
     pub avg_tree_capacity: f32,
     pub avg_temperature: f32,
+    pub avg_climate_pressure: f32,
     pub total_forage: f32,
     pub total_tree_biomass: f32,
     pub total_food_carried: f32,
@@ -264,15 +266,18 @@ fn decay_shelter_integrity(clock: Res<SimulationClock>, mut shelters: Query<&mut
 
 fn regrow_region_resources(
     clock: Res<SimulationClock>,
-    mut regions: Query<(&RegionTile, &mut RegionState)>,
+    mut regions: Query<(&RegionTile, &RegionClimate, &mut RegionState)>,
 ) {
     let delta_days = clock.delta_days();
 
-    for (tile, mut state) in &mut regions {
-        let forage_growth =
-            (0.16 + tile.soil_fertility * 0.20 + tile.temperature * 0.04) * delta_days;
-        let biomass_growth =
-            (0.08 + tile.soil_fertility * 0.12 + tile.mana_density * 0.04) * delta_days;
+    for (tile, climate, mut state) in &mut regions {
+        let suitability = (1.0 - climate.pressure * 0.75).clamp(0.15, 1.0);
+        let forage_growth = (0.16 + tile.soil_fertility * 0.20 + tile.temperature * 0.04)
+            * suitability
+            * delta_days;
+        let biomass_growth = (0.08 + tile.soil_fertility * 0.12 + tile.mana_density * 0.04)
+            * (0.55 + suitability * 0.45)
+            * delta_days;
 
         state.forage = (state.forage + forage_growth).clamp(0.0, state.forage_capacity);
         state.tree_biomass =
@@ -289,23 +294,32 @@ fn update_world_stats(
     shelters: Query<&Shelter>,
     shelter_stockpiles: Query<&ShelterStockpile>,
     inventories: Query<&Inventory>,
-    regions: Query<(&RegionTile, &RegionState)>,
+    regions: Query<(&RegionTile, &RegionState, &RegionClimate)>,
 ) {
-    let (mana_total, animal_capacity_total, tree_capacity_total, temperature_total, tile_count) =
-        regions
-            .iter()
-            .fold((0.0, 0.0, 0.0, 0.0, 0usize), |acc, (tile, _)| {
-                (
-                    acc.0 + tile.mana_density,
-                    acc.1 + tile.animal_capacity,
-                    acc.2 + tile.tree_capacity,
-                    acc.3 + tile.temperature,
-                    acc.4 + 1,
-                )
-            });
-    let (total_forage, total_tree_biomass) = regions.iter().fold((0.0, 0.0), |acc, (_, state)| {
-        (acc.0 + state.forage, acc.1 + state.tree_biomass)
-    });
+    let (
+        mana_total,
+        animal_capacity_total,
+        tree_capacity_total,
+        temperature_total,
+        pressure_total,
+        tile_count,
+    ) = regions.iter().fold(
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0usize),
+        |acc, (tile, _, climate)| {
+            (
+                acc.0 + tile.mana_density,
+                acc.1 + tile.animal_capacity,
+                acc.2 + tile.tree_capacity,
+                acc.3 + tile.temperature,
+                acc.4 + climate.pressure,
+                acc.5 + 1,
+            )
+        },
+    );
+    let (total_forage, total_tree_biomass) =
+        regions.iter().fold((0.0, 0.0), |acc, (_, state, _)| {
+            (acc.0 + state.forage, acc.1 + state.tree_biomass)
+        });
 
     stats.trees = trees.iter().count();
     stats.animals = animals.iter().count();
@@ -317,6 +331,7 @@ fn update_world_stats(
     stats.avg_animal_capacity = animal_capacity_total / divisor;
     stats.avg_tree_capacity = tree_capacity_total / divisor;
     stats.avg_temperature = temperature_total / divisor;
+    stats.avg_climate_pressure = pressure_total / divisor;
     stats.total_forage = total_forage;
     stats.total_tree_biomass = total_tree_biomass;
     stats.total_food_carried = inventories.iter().map(|inv| inv.food).sum();

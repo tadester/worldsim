@@ -22,9 +22,11 @@ This project evolves in small “phases” to keep the simulation coherent and i
 - Phase 11: threats
   - Predators roam the world and hunt nearby animals and settlers.
   - NPCs can flee when predators get too close.
+- Phase 12: long-term climate/seasons
+  - Seasonal temperature cycle plus slow drift create per-region climate pressure.
+  - Resource regrowth scales with climate pressure and temperature.
 
 ## Current
 
-- Phase 12: long-term climate/seasons
-  - Temperature shifts over time, changing regional pressure.
-  - Resource regrowth adapts to seasonal/climate conditions.
+- Roadmap complete
+  - Continue iterative improvements (simulation depth, UI, performance, and sandboxing).

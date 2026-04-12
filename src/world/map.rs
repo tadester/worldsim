@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::world::climate::RegionClimate;
+
 #[derive(Resource, Debug, Clone)]
 pub struct MapSettings {
     pub width: i32,
@@ -42,6 +44,7 @@ pub struct RegionTile {
     pub soil_fertility: f32,
     pub animal_capacity: f32,
     pub tree_capacity: f32,
+    pub base_temperature: f32,
     pub temperature: f32,
 }
 
@@ -97,8 +100,10 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
                     soil_fertility,
                     animal_capacity,
                     tree_capacity,
+                    base_temperature: temperature,
                     temperature,
                 },
+                RegionClimate::default(),
                 RegionState {
                     forage: animal_capacity * 0.55,
                     forage_capacity: animal_capacity,

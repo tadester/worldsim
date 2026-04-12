@@ -1,9 +1,11 @@
+pub mod climate;
 pub mod map;
 pub mod resources;
 pub mod spawning;
 pub mod territory;
 
 use bevy::prelude::*;
+use climate::ClimatePlugin;
 use map::{MapPlugin, MapSettings};
 use resources::WorldResourcesPlugin;
 use spawning::WorldSpawningPlugin;
@@ -15,6 +17,7 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapSettings>().add_plugins((
             MapPlugin,
+            ClimatePlugin,
             WorldResourcesPlugin,
             TerritoryPlugin,
             WorldSpawningPlugin,

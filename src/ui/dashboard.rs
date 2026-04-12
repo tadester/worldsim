@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::agents::factions::Faction;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
+use crate::world::climate::ClimateModel;
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
 
@@ -52,6 +53,7 @@ fn spawn_dashboard(mut commands: Commands) {
 
 fn update_dashboard_text(
     stats: Res<WorldStats>,
+    climate: Res<ClimateModel>,
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
     log: Res<EventLog>,
@@ -126,7 +128,7 @@ fn update_dashboard_text(
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
@@ -148,6 +150,11 @@ fn update_dashboard_text(
             stats.avg_animal_capacity,
             stats.avg_tree_capacity,
             stats.avg_temperature,
+            climate.season_label(),
+            climate.year_day(step.elapsed_days),
+            climate.year_length_days,
+            climate.current_offset,
+            stats.avg_climate_pressure,
             stats.total_forage,
             stats.total_tree_biomass,
             stats.total_food_carried,
