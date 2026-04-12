@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
 use crate::agents::inventory::Inventory;
+use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::SimulationClock;
 use crate::world::map::{RegionState, RegionTile};
@@ -65,6 +66,7 @@ struct ShelterRoof;
 pub struct WorldStats {
     pub trees: usize,
     pub animals: usize,
+    pub predators: usize,
     pub npcs: usize,
     pub shelters: usize,
     pub avg_mana_density: f32,
@@ -282,6 +284,7 @@ fn update_world_stats(
     mut stats: ResMut<WorldStats>,
     trees: Query<&Tree>,
     animals: Query<&Animal>,
+    predators: Query<&Predator>,
     npcs: Query<&crate::agents::npc::Npc>,
     shelters: Query<&Shelter>,
     shelter_stockpiles: Query<&ShelterStockpile>,
@@ -306,6 +309,7 @@ fn update_world_stats(
 
     stats.trees = trees.iter().count();
     stats.animals = animals.iter().count();
+    stats.predators = predators.iter().count();
     stats.npcs = npcs.iter().count();
     stats.shelters = shelters.iter().count();
     let divisor = tile_count.max(1) as f32;

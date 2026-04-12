@@ -5,6 +5,7 @@ pub mod inventory;
 pub mod memory;
 pub mod needs;
 pub mod npc;
+pub mod predator;
 pub mod relationships;
 
 use animal::AnimalPlugin;
@@ -14,6 +15,7 @@ use factions::FactionPlugin;
 use memory::MemoryPlugin;
 use needs::NeedsPlugin;
 use npc::NpcPlugin;
+use predator::PredatorPlugin;
 use relationships::RelationshipsPlugin;
 
 pub struct AgentsPlugin;
@@ -23,6 +25,7 @@ impl Plugin for AgentsPlugin {
         app.add_plugins((
             AnimalPlugin,
             NpcPlugin,
+            PredatorPlugin,
             FactionPlugin,
             NeedsPlugin,
             MemoryPlugin,

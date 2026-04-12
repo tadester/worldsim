@@ -7,6 +7,7 @@ use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
+use crate::agents::predator::Predator;
 use crate::agents::relationships::Relationships;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
@@ -37,6 +38,7 @@ impl Plugin for DecisionPlugin {
             Update,
             (
                 evaluate_npc_intents,
+                avoid_predators,
                 apply_npc_intents,
                 harvest_npc_resources,
                 transfer_home_stockpiles,
@@ -449,6 +451,63 @@ fn evaluate_npc_intents(
     }
 }
 
+fn avoid_predators(
+    clock: Res<SimulationClock>,
+    mut npcs: Query<(&Transform, &mut Needs, &mut NpcIntent), With<Npc>>,
+    predators: Query<&Transform, With<Predator>>,
+) {
+    let delta_seconds = clock.delta_seconds();
+    if delta_seconds <= 0.0 {
+        return;
+    }
+
+    let predator_positions: Vec<Vec2> =
+        predators.iter().map(|t| t.translation.truncate()).collect();
+    if predator_positions.is_empty() {
+        return;
+    }
+
+    let threat_radius = 120.0;
+    let flee_radius = 90.0;
+
+    for (transform, mut needs, mut intent) in &mut npcs {
+        let pos = transform.translation.truncate();
+        let mut nearest: Option<(Vec2, f32)> = None;
+
+        for predator_pos in predator_positions.iter().copied() {
+            let d = pos.distance(predator_pos);
+            if d > threat_radius {
+                continue;
+            }
+            if nearest.map(|(_, best)| d < best).unwrap_or(true) {
+                nearest = Some((predator_pos, d));
+            }
+        }
+
+        let Some((predator_pos, distance)) = nearest else {
+            continue;
+        };
+
+        let mut away = pos - predator_pos;
+        if away.length_squared() > 0.001 {
+            away = away.normalize();
+        }
+
+        if distance <= flee_radius {
+            if intent.label != "Flee" {
+                intent.label.clear();
+                intent.label.push_str("Flee");
+            }
+            intent.heading = away;
+            needs.safety = (needs.safety - delta_seconds * 0.10).max(0.0);
+            needs.fatigue = (needs.fatigue + delta_seconds * 0.06).min(1.0);
+        } else if intent.label == "Explore" {
+            intent.heading = (intent.heading + away * 0.55).normalize_or_zero();
+            needs.safety = (needs.safety - delta_seconds * 0.02).max(0.0);
+        }
+    }
+}
+
 fn apply_npc_intents(
     clock: Res<SimulationClock>,
     settings: Res<MapSettings>,
@@ -487,6 +546,10 @@ fn apply_npc_intents(
             "Retreat" => {
                 needs.safety = (needs.safety + delta_seconds * 0.05).min(1.0);
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.01).min(1.0);
+            }
+            "Flee" => {
+                needs.safety = (needs.safety + delta_seconds * 0.01).min(1.0);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.04).min(1.0);
             }
             "Build Shelter" => {
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.02).min(1.0);

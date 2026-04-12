@@ -7,9 +7,10 @@ use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
+use crate::agents::predator::Predator;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::world::map::{MapSettings, RegionLookup};
+use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
 use crate::world::territory::Territory;
 
@@ -53,6 +54,7 @@ fn cycle_selected_entity(
     trees: Query<(Entity, &Transform), With<Tree>>,
     shelters: Query<(Entity, &Transform), With<Shelter>>,
     animals: Query<(Entity, &Transform), With<Animal>>,
+    predators: Query<(Entity, &Transform), With<Predator>>,
     npcs: Query<(Entity, &Transform), With<Npc>>,
     mut selected: ResMut<SelectedEntity>,
 ) {
@@ -68,6 +70,9 @@ fn cycle_selected_entity(
                 (entity, transform.translation.x, transform.translation.y)
             }))
             .chain(animals.iter().map(|(entity, transform)| {
+                (entity, transform.translation.x, transform.translation.y)
+            }))
+            .chain(predators.iter().map(|(entity, transform)| {
                 (entity, transform.translation.x, transform.translation.y)
             }))
             .chain(npcs.iter().map(|(entity, transform)| {
@@ -90,7 +95,6 @@ fn cycle_selected_entity(
 fn update_inspector(
     selected: Res<SelectedEntity>,
     settings: Res<MapSettings>,
-    lookup: Res<RegionLookup>,
     trees: Query<(&Tree, &Transform, Option<&ManaReservoir>)>,
     shelters: Query<(
         &Shelter,
@@ -99,8 +103,9 @@ fn update_inspector(
         Option<&FactionMember>,
     )>,
     animals: Query<(&Animal, &Lifecycle, &Transform)>,
+    predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
-    territories: Query<&Territory>,
+    regions: Query<(&RegionTile, &Territory)>,
     npcs: Query<(
         &Npc,
         &Needs,
@@ -156,6 +161,15 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
+        } else if let Ok((predator, transform)) = predators.get(entity) {
+            format!(
+                "Type: Predator\nHealth: {:.1}\nHunger: {:.2}\nSpeed: {:.1}\nPos: {:.0}, {:.0}",
+                predator.health,
+                predator.hunger,
+                predator.speed,
+                transform.translation.x,
+                transform.translation.y,
+            )
         } else if let Ok((npc, needs, memory, intent, home, inventory, mana, transform, member)) =
             npcs.get(entity)
         {
@@ -179,18 +193,21 @@ fn update_inspector(
                 .unwrap_or("none");
 
             let coord = settings.tile_coord_for_position(transform.translation.truncate());
-            let territory_line = lookup
-                .by_coord
-                .get(&coord)
-                .and_then(|region| territories.get(*region).ok())
-                .and_then(|territory| {
+            let territory_line = regions
+                .iter()
+                .find(|(tile, _)| tile.coord == coord)
+                .and_then(|(_, territory)| {
                     territory.owner.and_then(|owner| {
                         factions.get(owner).ok().map(|faction| {
                             format!(
                                 "{} ({:.2}{})",
                                 faction.name,
                                 territory.control,
-                                if territory.contested { ", contested" } else { "" }
+                                if territory.contested {
+                                    ", contested"
+                                } else {
+                                    ""
+                                }
                             )
                         })
                     })
@@ -222,7 +239,7 @@ fn update_inspector(
             "Selected entity no longer exists".to_string()
         }
     } else {
-        "No entity selected\nPress Tab to cycle through trees, shelters, animals, and NPCs"
+        "No entity selected\nPress Tab to cycle through trees, shelters, animals, predators, and NPCs"
             .to_string()
     };
 

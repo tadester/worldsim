@@ -126,13 +126,14 @@ fn update_dashboard_text(
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
             if clock.paused { " (paused)" } else { "" },
             stats.trees,
             stats.animals,
+            stats.predators,
             stats.npcs,
             stats.shelters,
             claimed_tiles,
@@ -191,7 +192,10 @@ fn update_trend_history(
         match entry.kind {
             LogEventKind::Birth => births += 1,
             LogEventKind::Death => deaths += 1,
-            LogEventKind::Discovery | LogEventKind::Construction | LogEventKind::Territory => {}
+            LogEventKind::Discovery
+            | LogEventKind::Construction
+            | LogEventKind::Territory
+            | LogEventKind::Threat => {}
         }
     }
 
@@ -217,5 +221,6 @@ fn event_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Discovery => "Discovery",
         LogEventKind::Construction => "Build",
         LogEventKind::Territory => "Territory",
+        LogEventKind::Threat => "Threat",
     }
 }

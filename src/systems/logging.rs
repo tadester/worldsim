@@ -28,6 +28,7 @@ pub enum LogEventKind {
     Discovery,
     Construction,
     Territory,
+    Threat,
 }
 
 #[derive(Resource, Default)]

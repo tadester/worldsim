@@ -16,12 +16,15 @@ This project evolves in small “phases” to keep the simulation coherent and i
 - Phase 9: NPC foraging economy
   - NPCs carry food/wood, stockpile them at home, and consume food over time.
   - Foraging and wood gathering draw down regional resources.
+- Phase 10: factions + territory
+  - NPCs align into factions and prefer allied shelters and allies when socializing.
+  - Regions accrue faction control based on presence, becoming contested when rivals overlap.
+- Phase 11: threats
+  - Predators roam the world and hunt nearby animals and settlers.
+  - NPCs can flee when predators get too close.
 
 ## Current
 
-- Phase 10: factions + territory (claim regions, cooperate/compete)
-
-## Next (likely)
-
-- Phase 11: threats (predation/hostility, basic combat/avoidance)
-- Phase 12: long-term climate/seasons (temperature shifts, resource pressure)
+- Phase 12: long-term climate/seasons
+  - Temperature shifts over time, changing regional pressure.
+  - Resource regrowth adapts to seasonal/climate conditions.
