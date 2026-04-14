@@ -6,7 +6,7 @@ use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::SimulationClock;
 use crate::world::climate::RegionClimate;
-use crate::world::map::{RegionState, RegionTile};
+use crate::world::map::{MapSettings, RegionState, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Tree {
@@ -27,6 +27,7 @@ pub enum TreeStage {
 pub struct Shelter {
     pub integrity: f32,
     pub safety_bonus: f32,
+    pub insulation: f32,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -253,14 +254,27 @@ fn sync_shelter_visuals(
     }
 }
 
-fn decay_shelter_integrity(clock: Res<SimulationClock>, mut shelters: Query<&mut Shelter>) {
+fn decay_shelter_integrity(
+    clock: Res<SimulationClock>,
+    settings: Res<MapSettings>,
+    regions: Query<(&RegionTile, &RegionClimate)>,
+    mut shelters: Query<(&Transform, &mut Shelter)>,
+) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
         return;
     }
 
-    for mut shelter in &mut shelters {
-        shelter.integrity = (shelter.integrity - delta_days * 0.0015).max(0.0);
+    let pressure_by_coord: std::collections::HashMap<IVec2, f32> = regions
+        .iter()
+        .map(|(tile, climate)| (tile.coord, climate.pressure))
+        .collect();
+
+    for (transform, mut shelter) in &mut shelters {
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        let pressure = pressure_by_coord.get(&coord).copied().unwrap_or(0.0);
+        let rate = 0.0015 * (1.0 + pressure.clamp(0.0, 1.0) * 1.8);
+        shelter.integrity = (shelter.integrity - delta_days * rate).max(0.0);
     }
 }
 

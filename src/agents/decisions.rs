@@ -11,6 +11,7 @@ use crate::agents::predator::Predator;
 use crate::agents::relationships::Relationships;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
+use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile};
 use crate::world::territory::Territory;
@@ -45,7 +46,8 @@ impl Plugin for DecisionPlugin {
                 withdraw_home_food,
                 consume_carried_food,
                 apply_shelter_comfort.after(apply_npc_intents),
-                repair_npc_shelters.after(apply_shelter_comfort),
+                apply_climate_stress.after(apply_shelter_comfort),
+                repair_npc_shelters.after(apply_climate_stress),
                 build_npc_shelters.after(repair_npc_shelters),
             )
                 .chain(),
@@ -55,7 +57,12 @@ impl Plugin for DecisionPlugin {
 
 fn evaluate_npc_intents(
     settings: Res<MapSettings>,
-    regions: Query<(&RegionTile, &RegionState, Option<&Territory>)>,
+    regions: Query<(
+        &RegionTile,
+        &RegionState,
+        &RegionClimate,
+        Option<&Territory>,
+    )>,
     npc_positions: Query<(Entity, &Transform, Option<&FactionMember>), With<Npc>>,
     shelters: Query<(
         Entity,
@@ -77,7 +84,7 @@ fn evaluate_npc_intents(
         Option<&FactionMember>,
     )>,
 ) {
-    let mut region_index: HashMap<IVec2, (RegionTile, RegionState, Option<Entity>)> =
+    let mut region_index: HashMap<IVec2, (RegionTile, RegionState, f32, Option<Entity>)> =
         HashMap::new();
     let mut best_forage = -1.0;
     let mut best_forage_coord = IVec2::ZERO;
@@ -94,9 +101,9 @@ fn evaluate_npc_intents(
     let mut unclaimed_interesting = -1.0;
     let mut unclaimed_interesting_coord = IVec2::ZERO;
 
-    for (tile, state, territory) in &regions {
+    for (tile, state, climate, territory) in &regions {
         let owner = territory.and_then(|territory| territory.owner);
-        region_index.insert(tile.coord, (*tile, *state, owner));
+        region_index.insert(tile.coord, (*tile, *state, climate.pressure, owner));
 
         if state.forage > best_forage {
             best_forage = state.forage;
@@ -124,7 +131,9 @@ fn evaluate_npc_intents(
             }
         }
 
-        let safe_score = tile.soil_fertility + state.forage * 0.2 - tile.mana_density * 0.05;
+        let safe_score = tile.soil_fertility + state.forage * 0.2
+            - tile.mana_density * 0.05
+            - climate.pressure * 0.35;
         if safe_score > safest_score {
             safest_score = safe_score;
             safest_coord = tile.coord;
@@ -138,7 +147,8 @@ fn evaluate_npc_intents(
             }
         }
 
-        let interesting_score = tile.mana_density + tile.temperature * 0.3;
+        let interesting_score =
+            tile.mana_density + tile.temperature * 0.3 - climate.pressure * 0.15;
         if interesting_score > most_interesting {
             most_interesting = interesting_score;
             interesting_coord = tile.coord;
@@ -239,10 +249,10 @@ fn evaluate_npc_intents(
                 .unwrap_or(0.0)
         };
 
-        let (current_forage, local_biomass) = region_index
+        let (current_forage, local_biomass, local_pressure) = region_index
             .get(&current_coord)
-            .map(|(_, state, _)| (state.forage, state.tree_biomass))
-            .unwrap_or((0.0, 0.0));
+            .map(|(_, state, pressure, _)| (state.forage, state.tree_biomass, *pressure))
+            .unwrap_or((0.0, 0.0, 0.0));
 
         if current_forage > 0.5 {
             memory.last_forage_coord = Some(current_coord);
@@ -268,7 +278,8 @@ fn evaluate_npc_intents(
         let food_ratio = inventory.food_ratio();
         let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4) * (1.15 - food_ratio * 0.55);
         let social_utility = (1.0 - needs.social) * relationships.social_drive;
-        let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear);
+        let safety_utility =
+            (1.0 - needs.safety) * (0.8 + relationships.fear) + local_pressure * 0.55;
         let curiosity_utility = needs.curiosity * npc.curiosity * 0.8;
         let shelter_nearby = shelters.iter().any(|(_, _, _, shelter_transform, _)| {
             shelter_transform.translation.truncate().distance(pos) < 42.0
@@ -280,7 +291,7 @@ fn evaluate_npc_intents(
             && home.shelter.is_none()
             && inventory.wood >= 1.1
         {
-            (0.55 - needs.safety) + local_biomass * 0.1
+            ((0.55 - needs.safety) + local_biomass * 0.1) * (1.05 - local_pressure * 0.7)
         } else {
             0.0
         };
@@ -880,6 +891,63 @@ fn apply_shelter_comfort(
     }
 }
 
+fn apply_climate_stress(
+    clock: Res<SimulationClock>,
+    settings: Res<MapSettings>,
+    regions: Query<(&RegionTile, &RegionClimate)>,
+    shelters: Query<(&Shelter, &Transform)>,
+    mut npcs: Query<(&mut Npc, &Transform, &mut Needs)>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    let pressure_by_coord: std::collections::HashMap<IVec2, f32> = regions
+        .iter()
+        .map(|(tile, climate)| (tile.coord, climate.pressure))
+        .collect();
+
+    let shelter_radius = 48.0;
+
+    for (mut npc, transform, mut needs) in &mut npcs {
+        let pos = transform.translation.truncate();
+        let coord = settings.tile_coord_for_position(pos);
+        let pressure = pressure_by_coord
+            .get(&coord)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+
+        let mut shelter_protection = 0.0f32;
+        for (shelter, shelter_transform) in &shelters {
+            let d = pos.distance(shelter_transform.translation.truncate());
+            if d > shelter_radius {
+                continue;
+            }
+            let falloff = (1.0 - d / shelter_radius).clamp(0.0, 1.0);
+            let integrity = shelter.integrity.clamp(0.0, 1.0);
+            let protection = shelter.insulation * integrity * falloff;
+            shelter_protection = shelter_protection.max(protection);
+        }
+
+        let effective_pressure = (pressure - shelter_protection).clamp(0.0, 1.0);
+        if effective_pressure <= 0.01 {
+            continue;
+        }
+
+        needs.thirst = (needs.thirst + effective_pressure * delta_days * 0.05).min(1.0);
+        needs.hunger = (needs.hunger + effective_pressure * delta_days * 0.03).min(1.0);
+        needs.fatigue = (needs.fatigue + effective_pressure * delta_days * 0.02).min(1.0);
+        needs.safety = (needs.safety - effective_pressure * delta_days * 0.02).clamp(0.0, 1.0);
+
+        if effective_pressure > 0.9 && shelter_protection < 0.10 {
+            let damage = (effective_pressure - 0.9) * delta_days * 25.0;
+            npc.health = (npc.health - damage).max(0.0);
+        }
+    }
+}
+
 fn repair_npc_shelters(
     clock: Res<SimulationClock>,
     mut commands: Commands,
@@ -1004,6 +1072,7 @@ fn build_npc_shelters(
                 Shelter {
                     integrity: 1.0,
                     safety_bonus: 0.25,
+                    insulation: 0.42,
                 },
                 ShelterStockpile::default(),
             ))

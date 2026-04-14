@@ -10,6 +10,7 @@ use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
+use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
 use crate::world::territory::Territory;
@@ -106,6 +107,7 @@ fn update_inspector(
     predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
     regions: Query<(&RegionTile, &Territory)>,
+    climates: Query<(&RegionTile, &RegionClimate)>,
     npcs: Query<(
         &Npc,
         &Needs,
@@ -143,10 +145,11 @@ fn update_inspector(
                 .map(|faction| format!("Faction: {}", faction.name))
                 .unwrap_or_else(|| "Faction: none".to_string());
             format!(
-                "Type: Shelter\n{}\nIntegrity: {:.2}\nSafety bonus: {:.2}\n{}\nPos: {:.0}, {:.0}",
+                "Type: Shelter\n{}\nIntegrity: {:.2}\nSafety bonus: {:.2}\nInsulation: {:.2}\n{}\nPos: {:.0}, {:.0}",
                 faction_line,
                 shelter.integrity,
                 shelter.safety_bonus,
+                shelter.insulation,
                 stockpile_line,
                 transform.translation.x,
                 transform.translation.y,
@@ -214,13 +217,25 @@ fn update_inspector(
                 })
                 .unwrap_or_else(|| "unclaimed".to_string());
 
+            let climate_line = climates
+                .iter()
+                .find(|(tile, _)| tile.coord == coord)
+                .map(|(tile, climate)| {
+                    format!(
+                        "Climate: temp {:.2} | pressure {:.2}",
+                        tile.temperature, climate.pressure
+                    )
+                })
+                .unwrap_or_else(|| "Climate: n/a".to_string());
+
             format!(
-                "Type: NPC\nName: {}\nFaction: {}\nTile: {},{}\nTerritory: {}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 faction_line,
                 coord.x,
                 coord.y,
                 territory_line,
+                climate_line,
                 npc.health,
                 intent.label,
                 needs.hunger,
