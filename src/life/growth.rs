@@ -26,7 +26,7 @@ impl Plugin for GrowthPlugin {
 fn advance_lifecycle(
     clock: Res<SimulationClock>,
     mut animals: Query<(&mut Animal, &mut Lifecycle, Option<&Pregnancy>)>,
-    mut npcs: Query<(&mut Npc, &mut Lifecycle)>,
+    mut npcs: Query<(&mut Npc, &mut Lifecycle), Without<Animal>>,
 ) {
     let delta_days = clock.delta_days();
 

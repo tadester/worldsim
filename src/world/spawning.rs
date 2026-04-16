@@ -11,7 +11,7 @@ pub struct WorldSpawningPlugin;
 
 impl Plugin for WorldSpawningPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, seed_world_entities);
+        app.add_systems(PostStartup, seed_world_entities);
     }
 }
 

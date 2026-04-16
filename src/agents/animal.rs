@@ -128,7 +128,12 @@ fn sync_animal_visuals(
     mut legs: Query<&mut Transform, (With<AnimalLeg>, Without<AnimalBody>, Without<AnimalHead>)>,
     mut ears: Query<
         (&mut Sprite, &mut Transform),
-        (With<AnimalEar>, Without<AnimalBody>, Without<AnimalHead>),
+        (
+            With<AnimalEar>,
+            Without<AnimalBody>,
+            Without<AnimalHead>,
+            Without<AnimalLeg>,
+        ),
     >,
 ) {
     for (animal, children) in &animals {

@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use crate::agents::factions::Faction;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
-use crate::world::climate::ClimateModel;
+use crate::ui::DiagnosticsUiCamera;
+use crate::world::climate::{ClimateEventState, ClimateModel};
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
 
@@ -31,22 +32,30 @@ pub struct DashboardPlugin;
 impl Plugin for DashboardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TrendHistory>()
-            .add_systems(Startup, spawn_dashboard)
+            .add_systems(PostStartup, spawn_dashboard)
             .add_systems(Update, (update_trend_history, update_dashboard_text));
     }
 }
 
-fn spawn_dashboard(mut commands: Commands) {
+fn spawn_dashboard(mut commands: Commands, diagnostics_camera: Res<DiagnosticsUiCamera>) {
     commands.spawn((
-        Text::new("WorldSim dashboard"),
-        TextFont::from_font_size(16.0),
-        TextColor(Color::WHITE),
         Node {
             position_type: PositionType::Absolute,
             top: px(12.0),
             left: px(12.0),
+            width: px(420.0),
+            padding: UiRect::axes(px(14.0), px(12.0)),
+            border: UiRect::all(px(1.0)),
             ..default()
         },
+        BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
+        BorderColor::all(Color::srgba(0.24, 0.34, 0.44, 0.85)),
+        UiTargetCamera(diagnostics_camera.0),
+    ))
+    .with_child((
+        Text::new("WorldSim dashboard"),
+        TextFont::from_font_size(16.0),
+        TextColor(Color::WHITE),
         DashboardText,
     ));
 }
@@ -54,6 +63,7 @@ fn spawn_dashboard(mut commands: Commands) {
 fn update_dashboard_text(
     stats: Res<WorldStats>,
     climate: Res<ClimateModel>,
+    climate_events: Res<ClimateEventState>,
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
     log: Res<EventLog>,
@@ -74,22 +84,23 @@ fn update_dashboard_text(
             )
         })
         .unwrap_or_else(|| "No events yet".to_string());
-    let trend_line = trends
-        .samples
-        .iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|sample| {
-            format!(
+    let trend_line = {
+        let sample_count = trends.samples.len();
+        let start = sample_count.saturating_sub(4);
+        let mut line = String::new();
+        for (index, sample) in trends.samples[start..].iter().enumerate() {
+            if index > 0 {
+                line.push_str("  ");
+            }
+            use std::fmt::Write;
+            let _ = write!(
+                line,
                 "{:.0}:{}/{}/{}",
                 sample.day, sample.trees, sample.animals, sample.npcs
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("  ");
+            );
+        }
+        line
+    };
     let recent_births = trends
         .samples
         .last()
@@ -101,11 +112,26 @@ fn update_dashboard_text(
         .map(|sample| sample.deaths)
         .unwrap_or(0);
 
+    let climate_event_line = climate_events
+        .active
+        .as_ref()
+        .map(|event| {
+            format!(
+                "{} near {},{} ({:.1}d left)",
+                event.kind.label(),
+                event.center.x,
+                event.center.y,
+                event.remaining_days.max(0.0)
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+
     let mut territory_counts = std::collections::HashMap::<Entity, usize>::new();
     let mut claimed_tiles = 0usize;
     let mut contested_tiles = 0usize;
-    let total_tiles = territories.iter().count();
+    let mut total_tiles = 0usize;
     for territory in &territories {
+        total_tiles += 1;
         if territory.contested {
             contested_tiles += 1;
         }
@@ -128,7 +154,7 @@ fn update_dashboard_text(
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nClimate event: {}\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
@@ -154,6 +180,7 @@ fn update_dashboard_text(
             climate.year_day(step.elapsed_days),
             climate.year_length_days,
             climate.current_offset,
+            climate_event_line,
             stats.avg_climate_pressure,
             stats.total_forage,
             stats.total_tree_biomass,
@@ -202,7 +229,8 @@ fn update_trend_history(
             LogEventKind::Discovery
             | LogEventKind::Construction
             | LogEventKind::Territory
-            | LogEventKind::Threat => {}
+            | LogEventKind::Threat
+            | LogEventKind::Climate => {}
         }
     }
 
@@ -229,5 +257,6 @@ fn event_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Construction => "Build",
         LogEventKind::Territory => "Territory",
         LogEventKind::Threat => "Threat",
+        LogEventKind::Climate => "Climate",
     }
 }

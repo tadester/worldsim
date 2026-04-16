@@ -54,7 +54,7 @@ pub struct PredatorPlugin;
 
 impl Plugin for PredatorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, seed_predators).add_systems(
+        app.add_systems(PostStartup, seed_predators).add_systems(
             Update,
             (
                 attach_predator_visuals,
@@ -161,7 +161,7 @@ fn predator_hunt(
     settings: Res<MapSettings>,
     npcs: Query<(Entity, &Transform), With<Npc>>,
     animals: Query<(Entity, &Transform), With<Animal>>,
-    mut predators: Query<(&mut Transform, &mut Predator)>,
+    mut predators: Query<(&mut Transform, &mut Predator), (Without<Npc>, Without<Animal>)>,
 ) {
     let delta_seconds = clock.delta_seconds();
     if delta_seconds <= 0.0 {

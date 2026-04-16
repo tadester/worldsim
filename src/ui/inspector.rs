@@ -10,6 +10,7 @@ use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
+use crate::ui::DiagnosticsUiCamera;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
@@ -29,23 +30,30 @@ pub struct InspectorPlugin;
 impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedEntity>()
-            .add_systems(Startup, spawn_inspector)
+            .add_systems(PostStartup, spawn_inspector)
             .add_systems(Update, (cycle_selected_entity, update_inspector));
     }
 }
 
-fn spawn_inspector(mut commands: Commands) {
+fn spawn_inspector(mut commands: Commands, diagnostics_camera: Res<DiagnosticsUiCamera>) {
     commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(600.0),
+            left: px(12.0),
+            width: px(420.0),
+            padding: UiRect::axes(px(14.0), px(12.0)),
+            border: UiRect::all(px(1.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.10, 0.12, 0.08, 0.94)),
+        BorderColor::all(Color::srgba(0.36, 0.42, 0.24, 0.86)),
+        UiTargetCamera(diagnostics_camera.0),
+    ))
+    .with_child((
         Text::new("Inspector"),
         TextFont::from_font_size(14.0),
         TextColor(Color::srgb(0.96, 0.92, 0.84)),
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: px(44.0),
-            left: px(12.0),
-            width: px(340.0),
-            ..default()
-        },
         InspectorText,
     ));
 }
@@ -222,8 +230,12 @@ fn update_inspector(
                 .find(|(tile, _)| tile.coord == coord)
                 .map(|(tile, climate)| {
                     format!(
-                        "Climate: temp {:.2} | pressure {:.2}",
-                        tile.temperature, climate.pressure
+                        "Climate: temp {:.2} | pressure {:.2}\nTerrain: elevation {:.2} | moisture {:.2} | mana {:.2}",
+                        tile.temperature,
+                        climate.pressure,
+                        tile.elevation,
+                        tile.moisture,
+                        tile.mana_density,
                     )
                 })
                 .unwrap_or_else(|| "Climate: n/a".to_string());
