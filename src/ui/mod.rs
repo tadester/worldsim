@@ -17,7 +17,7 @@ use log_panel::LogPanelPlugin;
 pub struct DiagnosticsUiCamera(pub Entity);
 
 #[derive(Resource, Clone, Copy)]
-pub struct DiagnosticsUiRoot(pub Entity);
+pub struct GameMenuRoot(pub Entity);
 
 #[derive(Resource, Clone, Copy)]
 pub struct DiagnosticsSettingsPane(pub Entity);
@@ -73,16 +73,33 @@ fn spawn_diagnostics_window(mut commands: Commands) {
         ))
         .id();
 
-    let settings_pane = commands
+    let game_menu_root = commands
         .spawn((
             Node {
-                width: percent(100.0),
+                position_type: PositionType::Absolute,
+                top: px(12.0),
+                right: px(12.0),
+                bottom: px(96.0),
+                width: px(350.0),
+                padding: UiRect::all(px(12.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(12.0),
+                border: UiRect::all(px(1.0)),
                 ..default()
             },
-            UiTargetCamera(diagnostics_camera),
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.90)),
+            BorderColor::all(Color::srgba(0.22, 0.28, 0.34, 0.85)),
+            ZIndex(15),
         ))
+        .id();
+
+    let settings_pane = commands
+        .spawn(Node {
+            width: percent(100.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: px(12.0),
+            ..default()
+        })
         .id();
 
     let log_pane = commands
@@ -97,12 +114,13 @@ fn spawn_diagnostics_window(mut commands: Commands) {
         ))
         .id();
 
+    commands.entity(diagnostics_root).add_children(&[log_pane]);
     commands
-        .entity(diagnostics_root)
-        .add_children(&[settings_pane, log_pane]);
+        .entity(game_menu_root)
+        .add_children(&[settings_pane]);
 
     commands.insert_resource(DiagnosticsUiCamera(diagnostics_camera));
-    commands.insert_resource(DiagnosticsUiRoot(diagnostics_root));
+    commands.insert_resource(GameMenuRoot(game_menu_root));
     commands.insert_resource(DiagnosticsSettingsPane(settings_pane));
     commands.insert_resource(DiagnosticsLogPane(log_pane));
 }

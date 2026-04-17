@@ -636,55 +636,71 @@ fn harvest_npc_resources(
                     continue;
                 }
 
-                for (tile, mut state) in &mut regions {
-                    if tile.coord != coord {
+                let npc_pos = transform.translation.truncate();
+                let mut felled_tree = None;
+                let mut chopped_any_tree = false;
+                let mut chopped_amount = 0.0f32;
+
+                for (tree_entity, tree_transform, mut tree) in &mut trees {
+                    if tree.root_coord != coord {
+                        continue;
+                    }
+                    if tree_transform.translation.truncate().distance(npc_pos)
+                        > settings.tile_size * 0.95
+                    {
                         continue;
                     }
 
                     let harvest = (0.45 + (1.0 - needs.safety) * 0.7) * delta_days;
-                    let taken = harvest
-                        .min((state.tree_biomass - 0.2).max(0.0))
-                        .min(inventory.wood_space())
-                        .max(0.0);
-                    state.tree_biomass -= taken;
+                    let tree_yield = match tree.stage {
+                        TreeStage::Sapling => 0.16,
+                        TreeStage::Young => 0.32,
+                        TreeStage::Mature => 0.52,
+                    };
+                    let taken = harvest.min(inventory.wood_space()).min(tree_yield).max(0.0);
+
+                    if taken <= 0.0 {
+                        chopped_any_tree = true;
+                        break;
+                    }
+
                     inventory.wood += taken;
+                    chopped_any_tree = true;
+                    chopped_amount = taken;
+                    tree.chop_progress += taken * 2.8;
+                    tree.growth = (tree.growth - taken * 1.35).max(0.0);
+                    tree.stage = if tree.growth >= 0.9 {
+                        TreeStage::Mature
+                    } else if tree.growth >= 0.45 {
+                        TreeStage::Young
+                    } else {
+                        TreeStage::Sapling
+                    };
 
-                    if taken > 0.04 {
-                        let mut felled_tree = None;
-                        for (tree_entity, tree_transform, mut tree) in &mut trees {
-                            if tree_transform
-                                .translation
-                                .truncate()
-                                .distance(transform.translation.truncate())
-                                > settings.tile_size * 0.8
-                            {
-                                continue;
-                            }
-
-                            tree.growth = (tree.growth - taken * 0.9).max(0.0);
-                            tree.stage = if tree.growth >= 0.9 {
-                                TreeStage::Mature
-                            } else if tree.growth >= 0.45 {
-                                TreeStage::Young
-                            } else {
-                                TreeStage::Sapling
-                            };
-
-                            if tree.growth <= 0.08 {
-                                felled_tree = Some(tree_entity);
-                            }
-                            break;
-                        }
-
-                        if let Some(tree_entity) = felled_tree {
-                            commands.entity(tree_entity).despawn();
-                            writer.write(LogEvent::new(
-                                LogEventKind::Construction,
-                                "A settler felled a tree for lumber".to_string(),
-                            ));
-                        }
+                    if tree.chop_progress >= 1.0 || tree.growth <= 0.05 {
+                        felled_tree = Some(tree_entity);
                     }
                     break;
+                }
+
+                if !chopped_any_tree {
+                    continue;
+                }
+
+                for (tile, mut state) in &mut regions {
+                    if tile.coord != coord {
+                        continue;
+                    }
+                    state.tree_biomass = (state.tree_biomass - chopped_amount).max(0.0);
+                    break;
+                }
+
+                if let Some(tree_entity) = felled_tree {
+                    commands.entity(tree_entity).despawn();
+                    writer.write(LogEvent::new(
+                        LogEventKind::Construction,
+                        "A settler felled a tree for lumber".to_string(),
+                    ));
                 }
             }
             _ => {}

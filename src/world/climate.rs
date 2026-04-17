@@ -254,8 +254,8 @@ fn update_region_climate(
         let y_norm = tile.coord.y as f32 / height;
         let latitude_strength = 0.8 + y_norm * 0.6;
         let event_delta = events.local_temp_delta(tile.coord);
-        let temp =
-            (tile.base_temperature + global_offset * latitude_strength + event_delta).clamp(0.0, 1.0);
+        let temp = (tile.base_temperature + global_offset * latitude_strength + event_delta)
+            .clamp(0.0, 1.0);
         tile.temperature = temp;
 
         region_climate.pressure =

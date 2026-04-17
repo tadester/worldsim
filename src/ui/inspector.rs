@@ -10,7 +10,7 @@ use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::ui::{DiagnosticsSettingsPane, DiagnosticsUiCamera};
+use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
@@ -35,11 +35,7 @@ impl Plugin for InspectorPlugin {
     }
 }
 
-fn spawn_inspector(
-    mut commands: Commands,
-    diagnostics_camera: Res<DiagnosticsUiCamera>,
-    settings_pane: Res<DiagnosticsSettingsPane>,
-) {
+fn spawn_inspector(mut commands: Commands, settings_pane: Res<DiagnosticsSettingsPane>) {
     commands.entity(settings_pane.0).with_children(|parent| {
         parent
             .spawn((
@@ -51,7 +47,6 @@ fn spawn_inspector(
                 },
                 BackgroundColor(Color::srgba(0.10, 0.12, 0.08, 0.94)),
                 BorderColor::all(Color::srgba(0.36, 0.42, 0.24, 0.86)),
-                UiTargetCamera(diagnostics_camera.0),
             ))
             .with_child((
                 Text::new("Inspector"),
@@ -136,9 +131,10 @@ fn update_inspector(
     let body = if let Some(entity) = selected.entity {
         if let Ok((tree, transform, mana)) = trees.get(entity) {
             format!(
-                "Type: Tree\nStage: {}\nGrowth: {:.2}\nPos: {:.0}, {:.0}\nMana: {:.1}",
+                "Type: Tree\nStage: {}\nGrowth: {:.2}\nChop: {:.2}\nPos: {:.0}, {:.0}\nMana: {:.1}",
                 tree_stage_label(tree.stage),
                 tree.growth,
+                tree.chop_progress,
                 transform.translation.x,
                 transform.translation.y,
                 mana.map(|m| m.stored).unwrap_or(0.0),

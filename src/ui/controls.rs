@@ -1,9 +1,7 @@
 use bevy::prelude::*;
 
 use crate::systems::simulation::{SimulationClock, SimulationStep};
-use crate::ui::{
-    DiagnosticsLogPane, DiagnosticsSettingsPane, DiagnosticsUiCamera, DiagnosticsUiRoot,
-};
+use crate::ui::{DiagnosticsLogPane, DiagnosticsSettingsPane, GameMenuRoot};
 use crate::world::resources::WorldStats;
 
 #[derive(Component)]
@@ -45,7 +43,7 @@ pub struct ControlsUiPlugin;
 impl Plugin for ControlsUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DiagnosticsPanelState>()
-            .add_systems(PostStartup, (spawn_diagnostics_toolbar, spawn_game_footer))
+            .add_systems(PostStartup, (spawn_game_menu_toolbar, spawn_game_footer))
             .add_systems(
                 Update,
                 (
@@ -58,12 +56,8 @@ impl Plugin for ControlsUiPlugin {
     }
 }
 
-fn spawn_diagnostics_toolbar(
-    mut commands: Commands,
-    diagnostics_camera: Res<DiagnosticsUiCamera>,
-    diagnostics_root: Res<DiagnosticsUiRoot>,
-) {
-    commands.entity(diagnostics_root.0).with_children(|parent| {
+fn spawn_game_menu_toolbar(mut commands: Commands, game_menu_root: Res<GameMenuRoot>) {
+    commands.entity(game_menu_root.0).with_children(|parent| {
         parent
             .spawn((
                 Node {
@@ -76,26 +70,15 @@ fn spawn_diagnostics_toolbar(
                 },
                 BackgroundColor(Color::srgba(0.07, 0.07, 0.09, 0.92)),
                 BorderColor::all(Color::srgba(0.26, 0.30, 0.36, 0.85)),
-                UiTargetCamera(diagnostics_camera.0),
             ))
             .with_children(|row| {
-                spawn_toggle_button(
-                    row,
-                    ToggleTarget::Settings,
-                    "Settings: On",
-                    diagnostics_camera.0,
-                );
-                spawn_toggle_button(row, ToggleTarget::Logs, "Logs: On", diagnostics_camera.0);
+                spawn_toggle_button(row, ToggleTarget::Settings, "Settings: On");
+                spawn_toggle_button(row, ToggleTarget::Logs, "Logs: On");
             });
     });
 }
 
-fn spawn_toggle_button(
-    parent: &mut ChildSpawnerCommands<'_>,
-    target: ToggleTarget,
-    label: &str,
-    diagnostics_camera: Entity,
-) {
+fn spawn_toggle_button(parent: &mut ChildSpawnerCommands<'_>, target: ToggleTarget, label: &str) {
     parent
         .spawn((
             Button,
@@ -106,7 +89,6 @@ fn spawn_toggle_button(
             },
             BackgroundColor(Color::srgba(0.16, 0.19, 0.24, 0.96)),
             BorderColor::all(Color::srgba(0.36, 0.42, 0.52, 0.92)),
-            UiTargetCamera(diagnostics_camera),
             ToggleButton { target },
         ))
         .with_child((
@@ -236,11 +218,12 @@ fn update_footer_text(
 ) {
     for mut text in &mut texts {
         *text = Text::new(format!(
-            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = hard skip | Tab = cycle entity | Animals {} | NPCs {} | Predators {} | Shelters {}",
+            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = hard skip | Tab = cycle entity | Animals {} | Trees {} | NPCs {} | Predators {} | Shelters {}",
             step.elapsed_days,
             clock.speed_label(),
             if clock.paused { " (paused)" } else { "" },
             stats.animals,
+            stats.trees,
             stats.npcs,
             stats.predators,
             stats.shelters,

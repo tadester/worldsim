@@ -83,23 +83,23 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
             let moisture_noise = layered_noise(x - 9, y + 23, 0.27, 0.17, 0.09);
             let mana_noise = layered_noise(x + 41, y + 5, 0.33, 0.29, 0.10);
 
-            let coast_falloff = (1.0 - ((xf - 0.5).abs() * 1.35 + (yf - 0.5).abs() * 1.1))
-                .clamp(0.0, 1.0);
+            let coast_falloff =
+                (1.0 - ((xf - 0.5).abs() * 1.35 + (yf - 0.5).abs() * 1.1)).clamp(0.0, 1.0);
             let elevation = (0.18 + coast_falloff * 0.38 + broad_noise * 0.32 + ridge_noise * 0.18)
                 .clamp(0.0, 1.0);
             let moisture = (0.24 + (1.0 - yf) * 0.18 + moisture_noise * 0.44 - ridge_noise * 0.10)
                 .clamp(0.0, 1.0);
-            let mana_density = (0.10 + xf * 0.22 + mana_noise * 0.58 + elevation * 0.08)
-                .clamp(0.05, 1.0);
+            let mana_density =
+                (0.10 + xf * 0.22 + mana_noise * 0.58 + elevation * 0.08).clamp(0.05, 1.0);
             let soil_fertility =
                 (0.12 + moisture * 0.54 + coast_falloff * 0.12 - elevation * 0.08).clamp(0.05, 1.0);
             let animal_capacity =
                 (1.4 + soil_fertility * 5.0 + moisture * 1.6 - elevation * 0.7).clamp(0.8, 8.5);
             let tree_capacity =
                 (0.6 + soil_fertility * 7.2 + moisture * 2.4 - elevation * 0.5).clamp(0.4, 12.0);
-            let temperature =
-                (0.48 + xf * 0.12 - yf * 0.20 - elevation * 0.18 + mana_density * 0.06)
-                    .clamp(0.0, 1.0);
+            let temperature = (0.48 + xf * 0.12 - yf * 0.20 - elevation * 0.18
+                + mana_density * 0.06)
+                .clamp(0.0, 1.0);
 
             let pos_x = x as f32 * settings.tile_size - half_width + settings.tile_size * 0.5;
             let pos_y = y as f32 * settings.tile_size - half_height + settings.tile_size * 0.5;
@@ -110,26 +110,26 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
 
             commands
                 .spawn((
-                Sprite::from_color(tint, Vec2::splat(settings.tile_size - 1.0)),
-                Transform::from_xyz(pos_x, pos_y, 0.0),
-                RegionTile {
-                    coord: IVec2::new(x, y),
-                    elevation,
-                    moisture,
-                    mana_density,
-                    soil_fertility,
-                    animal_capacity,
-                    tree_capacity,
-                    base_temperature: temperature,
-                    temperature,
-                },
-                RegionClimate::default(),
-                RegionState {
-                    forage: animal_capacity * 0.55,
-                    forage_capacity: animal_capacity,
-                    tree_biomass: tree_capacity * 0.45,
-                    tree_biomass_capacity: tree_capacity,
-                },
+                    Sprite::from_color(tint, Vec2::splat(settings.tile_size - 1.0)),
+                    Transform::from_xyz(pos_x, pos_y, 0.0),
+                    RegionTile {
+                        coord: IVec2::new(x, y),
+                        elevation,
+                        moisture,
+                        mana_density,
+                        soil_fertility,
+                        animal_capacity,
+                        tree_capacity,
+                        base_temperature: temperature,
+                        temperature,
+                    },
+                    RegionClimate::default(),
+                    RegionState {
+                        forage: animal_capacity * 0.55,
+                        forage_capacity: animal_capacity,
+                        tree_biomass: tree_capacity * 0.45,
+                        tree_biomass_capacity: tree_capacity,
+                    },
                 ))
                 .with_children(|parent| {
                     parent.spawn((
@@ -137,22 +137,14 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
                             shadow,
                             Vec2::new(settings.tile_size * 0.92, settings.tile_size * 0.16),
                         ),
-                        Transform::from_xyz(
-                            0.0,
-                            -settings.tile_size * 0.22,
-                            0.01,
-                        ),
+                        Transform::from_xyz(0.0, -settings.tile_size * 0.22, 0.01),
                     ));
                     parent.spawn((
                         Sprite::from_color(
                             accent,
                             Vec2::new(settings.tile_size * 0.30, settings.tile_size * 0.24),
                         ),
-                        Transform::from_xyz(
-                            detail_offset.x,
-                            detail_offset.y,
-                            0.02,
-                        ),
+                        Transform::from_xyz(detail_offset.x, detail_offset.y, 0.02),
                     ));
                 });
         }
