@@ -13,7 +13,7 @@ use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
-use crate::world::resources::{Shelter, ShelterStockpile};
+use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
 use crate::world::territory::Territory;
 
 #[derive(Component, Debug, Clone)]
@@ -285,13 +285,13 @@ fn evaluate_npc_intents(
             shelter_transform.translation.truncate().distance(pos) < 42.0
         });
         let carrying_ratio = inventory.carry_ratio();
-        let build_utility = if needs.safety < 0.45
+        let build_utility = if needs.safety < 0.78
             && local_biomass > 0.9
             && !shelter_nearby
             && home.shelter.is_none()
             && inventory.wood >= 1.1
         {
-            ((0.55 - needs.safety) + local_biomass * 0.1) * (1.05 - local_pressure * 0.7)
+            ((0.9 - needs.safety) + local_biomass * 0.18) * (1.08 - local_pressure * 0.55)
         } else {
             0.0
         };
@@ -310,12 +310,15 @@ fn evaluate_npc_intents(
         } else {
             0.0
         };
-        let wants_wood = (home_position.is_some() && home_integrity < 0.85)
-            || (home_position.is_none() && needs.safety < 0.5);
         let wood_total = home_stockpiled_wood + inventory.wood;
+        let wants_wood = (home_position.is_some() && home_integrity < 0.85)
+            || (home_position.is_none() && (needs.safety < 0.82 || wood_total < 1.2));
         let gather_wood_utility =
             if wants_wood && wood_total < 2.5 && (local_biomass > 0.25 || best_biomass > 0.35) {
-                (1.0 - needs.safety) * 0.85 + (1.0 - home_integrity) * 0.95 + local_biomass * 0.08
+                (1.0 - needs.safety) * 0.95
+                    + (1.0 - home_integrity) * 0.95
+                    + local_biomass * 0.14
+                    + if home_position.is_none() { 0.42 } else { 0.0 }
             } else {
                 0.0
             };
@@ -478,8 +481,8 @@ fn avoid_predators(
         return;
     }
 
-    let threat_radius = 120.0;
-    let flee_radius = 90.0;
+    let threat_radius = 160.0;
+    let flee_radius = 120.0;
 
     for (transform, mut needs, mut intent) in &mut npcs {
         let pos = transform.translation.truncate();
@@ -528,9 +531,11 @@ fn apply_npc_intents(
     let bounds = settings.world_bounds() - Vec2::splat(10.0);
 
     for (mut transform, npc, mut needs, relationships, intent) in &mut npcs {
+        let pace_boost = if intent.label == "Flee" { 1.55 } else { 1.0 };
         let pace = npc.speed
             * (1.0 - needs.fatigue * 0.4)
             * (0.8 + relationships.trust_baseline * 0.2)
+            * pace_boost
             * delta_seconds;
 
         transform.translation.x += intent.heading.x * pace;
@@ -585,10 +590,13 @@ fn apply_npc_intents(
 }
 
 fn harvest_npc_resources(
+    mut commands: Commands,
     clock: Res<SimulationClock>,
     settings: Res<MapSettings>,
+    mut writer: MessageWriter<LogEvent>,
     mut npcs: Query<(&Transform, &NpcIntent, &Needs, &mut Inventory, &mut Memory), With<Npc>>,
     mut regions: Query<(&RegionTile, &mut RegionState)>,
+    mut trees: Query<(Entity, &Transform, &mut Tree)>,
 ) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
@@ -640,6 +648,42 @@ fn harvest_npc_resources(
                         .max(0.0);
                     state.tree_biomass -= taken;
                     inventory.wood += taken;
+
+                    if taken > 0.04 {
+                        let mut felled_tree = None;
+                        for (tree_entity, tree_transform, mut tree) in &mut trees {
+                            if tree_transform
+                                .translation
+                                .truncate()
+                                .distance(transform.translation.truncate())
+                                > settings.tile_size * 0.8
+                            {
+                                continue;
+                            }
+
+                            tree.growth = (tree.growth - taken * 0.9).max(0.0);
+                            tree.stage = if tree.growth >= 0.9 {
+                                TreeStage::Mature
+                            } else if tree.growth >= 0.45 {
+                                TreeStage::Young
+                            } else {
+                                TreeStage::Sapling
+                            };
+
+                            if tree.growth <= 0.08 {
+                                felled_tree = Some(tree_entity);
+                            }
+                            break;
+                        }
+
+                        if let Some(tree_entity) = felled_tree {
+                            commands.entity(tree_entity).despawn();
+                            writer.write(LogEvent::new(
+                                LogEventKind::Construction,
+                                "A settler felled a tree for lumber".to_string(),
+                            ));
+                        }
+                    }
                     break;
                 }
             }

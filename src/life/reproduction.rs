@@ -1,14 +1,23 @@
 use bevy::prelude::*;
 
 use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
+use crate::agents::inventory::Inventory;
+use crate::agents::needs::Needs;
+use crate::agents::npc::{Npc, NpcBundle, NpcHome};
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
+use crate::magic::storage::ManaStorageStyle;
 use crate::systems::logging::{LogEvent, LogEventKind};
-use crate::systems::simulation::SimulationClock;
+use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::map::{MapSettings, RegionState, RegionTile};
-use crate::world::resources::{Tree, TreeStage};
+use crate::world::resources::{ShelterStockpile, Tree, TreeStage};
 
 pub struct ReproductionPlugin;
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct NpcPregnancy {
+    pub gestation_days: f32,
+}
 
 impl Plugin for ReproductionPlugin {
     fn build(&self, app: &mut App) {
@@ -18,6 +27,8 @@ impl Plugin for ReproductionPlugin {
                 tree_seed_spread,
                 animal_reproduction,
                 resolve_animal_births.after(animal_reproduction),
+                npc_reproduction.after(resolve_animal_births),
+                resolve_npc_births.after(npc_reproduction),
             ),
         );
     }
@@ -117,17 +128,17 @@ fn animal_reproduction(
             continue;
         }
 
-        animal.reproduction_drive += delta_days * 0.12 * lifecycle.fertility.max(0.1);
+        animal.reproduction_drive += delta_days * 0.55 * lifecycle.fertility.max(0.25);
 
-        if animal.reproduction_drive < 1.0 {
+        if animal.reproduction_drive < 0.55 {
             continue;
         }
 
         animal.reproduction_drive = 0.0;
         animal.energy = (animal.energy - 8.0).max(0.0);
-        lifecycle.reproduction_cooldown = 22.0;
+        lifecycle.reproduction_cooldown = 9.0;
         commands.entity(entity).insert(Pregnancy {
-            gestation_days: 9.0,
+            gestation_days: 5.0,
             offspring_health: 18.0,
             offspring_speed: animal.speed * 0.95,
         });
@@ -138,6 +149,125 @@ fn animal_reproduction(
                 "Animal pregnancy began near {:.0},{:.0}",
                 transform.translation.x, transform.translation.y
             ),
+        ));
+    }
+}
+
+fn npc_reproduction(
+    mut commands: Commands,
+    clock: Res<SimulationClock>,
+    step: Res<SimulationStep>,
+    mut writer: MessageWriter<LogEvent>,
+    shelters: Query<Option<&ShelterStockpile>>,
+    mut npcs: Query<(
+        Entity,
+        &Npc,
+        &Transform,
+        &Needs,
+        &Inventory,
+        &NpcHome,
+        &mut Lifecycle,
+        Option<&NpcPregnancy>,
+    )>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (entity, npc, transform, needs, inventory, home, mut lifecycle, pregnancy) in &mut npcs {
+        if pregnancy.is_some()
+            || lifecycle.age_days < lifecycle.maturity_age
+            || lifecycle.reproduction_cooldown > 0.0
+            || npc.health < 42.0
+            || needs.hunger > 0.45
+            || needs.fatigue > 0.7
+            || needs.safety < 0.42
+        {
+            continue;
+        }
+
+        let Some(home_entity) = home.shelter else {
+            continue;
+        };
+        let stockpile = shelters
+            .get(home_entity)
+            .ok()
+            .flatten()
+            .copied()
+            .unwrap_or_default();
+
+        let resource_security = stockpile.food + inventory.food + stockpile.wood * 0.35;
+        if resource_security < 1.25 {
+            continue;
+        }
+
+        let entity_seed = entity.to_bits() as f32;
+        let cycle_days = 10.0 + (entity.to_bits() % 5) as f32 * 2.0;
+        let phase = (step.elapsed_days + entity_seed * 0.37) % cycle_days;
+        if phase > delta_days * 1.5 {
+            continue;
+        }
+
+        lifecycle.reproduction_cooldown = 36.0;
+        commands.entity(entity).insert(NpcPregnancy {
+            gestation_days: 12.0,
+        });
+        writer.write(LogEvent::new(
+            LogEventKind::Birth,
+            format!(
+                "{} is expecting a child near {:.0},{:.0}",
+                npc.name, transform.translation.x, transform.translation.y
+            ),
+        ));
+    }
+}
+
+fn resolve_npc_births(
+    mut commands: Commands,
+    clock: Res<SimulationClock>,
+    step: Res<SimulationStep>,
+    mut writer: MessageWriter<LogEvent>,
+    mut npcs: Query<(
+        Entity,
+        &Transform,
+        &Npc,
+        &ManaReservoir,
+        &ManaStorageStyle,
+        &mut NpcPregnancy,
+    )>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (entity, transform, npc, reservoir, mana_style, mut pregnancy) in &mut npcs {
+        pregnancy.gestation_days -= delta_days;
+        if pregnancy.gestation_days > 0.0 {
+            continue;
+        }
+
+        let offset = Vec2::new(transform.translation.y.sin(), transform.translation.x.cos()) * 16.0;
+        let child_name = format!("{} Kin {}", npc.name, step.tick % 10_000);
+        commands.spawn(
+            NpcBundle::new(
+                transform.translation.truncate() + offset,
+                child_name,
+                (npc.health * 0.72).clamp(34.0, 60.0),
+                ManaReservoir {
+                    capacity: reservoir.capacity,
+                    stored: (reservoir.stored * 0.35).min(reservoir.capacity),
+                    stability: reservoir.stability,
+                },
+                *mana_style,
+            )
+            .with_age_days(0.0),
+        );
+        commands.entity(entity).remove::<NpcPregnancy>();
+        writer.write(LogEvent::new(
+            LogEventKind::Birth,
+            format!("A child was born to {}", npc.name),
         ));
     }
 }

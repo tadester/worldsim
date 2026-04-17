@@ -72,6 +72,18 @@ impl AnimalBundle {
             },
         }
     }
+
+    pub fn with_age_days(mut self, age_days: f32) -> Self {
+        self.lifecycle.age_days = age_days.max(0.0);
+        self.animal.life_stage = if age_days < self.lifecycle.maturity_age {
+            AnimalLifeStage::Juvenile
+        } else if age_days > self.lifecycle.max_age * 0.75 {
+            AnimalLifeStage::Elder
+        } else {
+            AnimalLifeStage::Adult
+        };
+        self
+    }
 }
 
 pub struct AnimalPlugin;

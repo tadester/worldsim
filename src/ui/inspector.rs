@@ -10,7 +10,7 @@ use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
-use crate::ui::DiagnosticsUiCamera;
+use crate::ui::{DiagnosticsSettingsPane, DiagnosticsUiCamera};
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
@@ -35,27 +35,31 @@ impl Plugin for InspectorPlugin {
     }
 }
 
-fn spawn_inspector(mut commands: Commands, diagnostics_camera: Res<DiagnosticsUiCamera>) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(600.0),
-            left: px(12.0),
-            width: px(420.0),
-            padding: UiRect::axes(px(14.0), px(12.0)),
-            border: UiRect::all(px(1.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.10, 0.12, 0.08, 0.94)),
-        BorderColor::all(Color::srgba(0.36, 0.42, 0.24, 0.86)),
-        UiTargetCamera(diagnostics_camera.0),
-    ))
-    .with_child((
-        Text::new("Inspector"),
-        TextFont::from_font_size(14.0),
-        TextColor(Color::srgb(0.96, 0.92, 0.84)),
-        InspectorText,
-    ));
+fn spawn_inspector(
+    mut commands: Commands,
+    diagnostics_camera: Res<DiagnosticsUiCamera>,
+    settings_pane: Res<DiagnosticsSettingsPane>,
+) {
+    commands.entity(settings_pane.0).with_children(|parent| {
+        parent
+            .spawn((
+                Node {
+                    width: percent(100.0),
+                    padding: UiRect::axes(px(14.0), px(12.0)),
+                    border: UiRect::all(px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.10, 0.12, 0.08, 0.94)),
+                BorderColor::all(Color::srgba(0.36, 0.42, 0.24, 0.86)),
+                UiTargetCamera(diagnostics_camera.0),
+            ))
+            .with_child((
+                Text::new("Inspector"),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.96, 0.92, 0.84)),
+                InspectorText,
+            ));
+    });
 }
 
 fn cycle_selected_entity(

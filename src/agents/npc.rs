@@ -86,6 +86,11 @@ impl NpcBundle {
             mana_practice: ManaPractice::default(),
         }
     }
+
+    pub fn with_age_days(mut self, age_days: f32) -> Self {
+        self.lifecycle.age_days = age_days.max(0.0);
+        self
+    }
 }
 
 pub struct NpcPlugin;

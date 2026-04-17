@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::agents::factions::Faction;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
-use crate::ui::DiagnosticsUiCamera;
+use crate::ui::{DiagnosticsSettingsPane, DiagnosticsUiCamera};
 use crate::world::climate::{ClimateEventState, ClimateModel};
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
@@ -37,27 +37,31 @@ impl Plugin for DashboardPlugin {
     }
 }
 
-fn spawn_dashboard(mut commands: Commands, diagnostics_camera: Res<DiagnosticsUiCamera>) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(12.0),
-            left: px(12.0),
-            width: px(420.0),
-            padding: UiRect::axes(px(14.0), px(12.0)),
-            border: UiRect::all(px(1.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
-        BorderColor::all(Color::srgba(0.24, 0.34, 0.44, 0.85)),
-        UiTargetCamera(diagnostics_camera.0),
-    ))
-    .with_child((
-        Text::new("WorldSim dashboard"),
-        TextFont::from_font_size(16.0),
-        TextColor(Color::WHITE),
-        DashboardText,
-    ));
+fn spawn_dashboard(
+    mut commands: Commands,
+    diagnostics_camera: Res<DiagnosticsUiCamera>,
+    settings_pane: Res<DiagnosticsSettingsPane>,
+) {
+    commands.entity(settings_pane.0).with_children(|parent| {
+        parent
+            .spawn((
+                Node {
+                    width: percent(100.0),
+                    padding: UiRect::axes(px(14.0), px(12.0)),
+                    border: UiRect::all(px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
+                BorderColor::all(Color::srgba(0.24, 0.34, 0.44, 0.85)),
+                UiTargetCamera(diagnostics_camera.0),
+            ))
+            .with_child((
+                Text::new("Settings"),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::WHITE),
+                DashboardText,
+            ));
+    });
 }
 
 fn update_dashboard_text(

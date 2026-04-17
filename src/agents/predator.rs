@@ -13,6 +13,7 @@ pub struct Predator {
     pub speed: f32,
     pub hunger: f32,
     pub attack_cooldown: f32,
+    pub satiated_days: f32,
     pub wander_angle: f32,
     pub last_log_day: f32,
 }
@@ -42,7 +43,8 @@ impl PredatorBundle {
                 health: 52.0 + seed * 10.0,
                 speed: 36.0 + seed * 8.0,
                 hunger: 0.2,
-                attack_cooldown: 0.0,
+                attack_cooldown: 1.8,
+                satiated_days: 0.9 + seed * 0.6,
                 wander_angle: seed * 6.28,
                 last_log_day: -999.0,
             },
@@ -74,9 +76,14 @@ fn seed_predators(
     tiles: Query<(&RegionTile, &Transform)>,
 ) {
     let desired = ((settings.width * settings.height) as usize / 80).clamp(3, 7);
+    let settler_band = settings.height / 2;
     let mut candidates = tiles
         .iter()
-        .filter(|(tile, _)| tile.mana_density > 0.65 && tile.soil_fertility < 0.7)
+        .filter(|(tile, _)| {
+            tile.mana_density > 0.65
+                && tile.soil_fertility < 0.7
+                && (tile.coord.y - settler_band).abs() >= 3
+        })
         .map(|(tile, transform)| (tile.mana_density, transform.translation.truncate()))
         .collect::<Vec<_>>();
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -164,6 +171,7 @@ fn predator_hunt(
     mut predators: Query<(&mut Transform, &mut Predator), (Without<Npc>, Without<Animal>)>,
 ) {
     let delta_seconds = clock.delta_seconds();
+    let delta_days = clock.delta_days();
     if delta_seconds <= 0.0 {
         return;
     }
@@ -180,23 +188,50 @@ fn predator_hunt(
 
     for (mut transform, mut predator) in &mut predators {
         predator.attack_cooldown = (predator.attack_cooldown - delta_seconds).max(0.0);
-        predator.hunger = (predator.hunger + delta_seconds * 0.012).min(1.0);
+        predator.satiated_days = (predator.satiated_days - delta_days).max(0.0);
+        let hunger_gain = if predator.satiated_days > 0.0 {
+            delta_seconds * 0.0035
+        } else {
+            delta_seconds * 0.014
+        };
+        predator.hunger = (predator.hunger + hunger_gain).min(1.0);
         predator.health = (predator.health - predator.hunger * delta_seconds * 0.08).max(0.0);
         predator.wander_angle += delta_seconds * (0.25 + predator.speed * 0.01);
 
         let pos = transform.translation.truncate();
-        let mut target = None;
         let mut best_dist = f32::MAX;
+        let actively_hunting = predator.satiated_days <= 0.0 && predator.hunger >= 0.38;
 
-        for (entity, other_pos) in npc_positions.iter().copied() {
-            let dist = pos.distance(other_pos);
-            if dist < best_dist && dist < 240.0 {
-                best_dist = dist;
-                target = Some((entity, other_pos));
+        let mut nearest_animal = None;
+        if actively_hunting {
+            for (entity, other_pos) in animal_positions.iter().copied() {
+                let dist = pos.distance(other_pos);
+                if dist < best_dist && dist < 220.0 {
+                    best_dist = dist;
+                    nearest_animal = Some((entity, other_pos));
+                }
             }
         }
 
-        if target.is_none() {
+        let mut nearest_npc = None;
+        best_dist = f32::MAX;
+        if actively_hunting {
+            for (entity, other_pos) in npc_positions.iter().copied() {
+                let dist = pos.distance(other_pos);
+                if dist < best_dist && dist < 150.0 {
+                    best_dist = dist;
+                    nearest_npc = Some((entity, other_pos));
+                }
+            }
+        }
+
+        let mut target = if predator.hunger < 0.68 {
+            nearest_animal.or(nearest_npc)
+        } else {
+            nearest_npc.or(nearest_animal)
+        };
+
+        if actively_hunting && target.is_none() {
             for (entity, other_pos) in animal_positions.iter().copied() {
                 let dist = pos.distance(other_pos);
                 if dist < best_dist && dist < 190.0 {
@@ -208,11 +243,18 @@ fn predator_hunt(
 
         let direction = if let Some((_, target_pos)) = target {
             (target_pos - pos).normalize_or_zero()
+        } else if predator.satiated_days > 0.0 {
+            let drift = Vec2::new(-predator.wander_angle.sin(), predator.wander_angle.cos());
+            drift.normalize_or_zero()
         } else {
             Vec2::new(predator.wander_angle.cos(), predator.wander_angle.sin())
         };
 
-        let pace = predator.speed * (0.65 + predator.hunger * 0.55) * delta_seconds;
+        let pace = if predator.satiated_days > 0.0 {
+            predator.speed * 0.42 * delta_seconds
+        } else {
+            predator.speed * (0.62 + predator.hunger * 0.55) * delta_seconds
+        };
         transform.translation.x += direction.x * pace;
         transform.translation.y += direction.y * pace;
         transform.translation.x = transform.translation.x.clamp(-bounds.x, bounds.x);
@@ -243,42 +285,66 @@ fn predator_attack(
         .collect::<Vec<_>>();
 
     for (transform, mut predator) in &mut predators {
-        if predator.attack_cooldown > 0.0 || predator.health <= 0.0 {
+        if predator.attack_cooldown > 0.0
+            || predator.health <= 0.0
+            || predator.satiated_days > 0.0
+            || predator.hunger < 0.34
+        {
             continue;
         }
 
         let pos = transform.translation.truncate();
         let mut best_target = None;
-        let mut best_dist = 18.0f32;
+        let mut best_dist = if predator.hunger >= 0.78 { 14.0 } else { 11.0 };
+        let mut nearest_animal = None;
+        let mut animal_dist = 18.0f32;
 
-        for (entity, other_pos) in npc_positions.iter().copied() {
+        for (entity, other_pos) in animal_positions.iter().copied() {
             let dist = pos.distance(other_pos);
-            if dist < best_dist {
-                best_dist = dist;
-                best_target = Some((entity, true));
+            if dist < animal_dist {
+                animal_dist = dist;
+                nearest_animal = Some((entity, false));
+            }
+        }
+
+        if predator.hunger >= 0.78 || nearest_animal.is_none() {
+            for (entity, other_pos) in npc_positions.iter().copied() {
+                let dist = pos.distance(other_pos);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_target = Some((entity, true));
+                }
             }
         }
 
         if best_target.is_none() {
-            for (entity, other_pos) in animal_positions.iter().copied() {
-                let dist = pos.distance(other_pos);
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_target = Some((entity, false));
-                }
-            }
+            best_target = nearest_animal;
         }
 
         let Some((target, is_npc)) = best_target else {
             continue;
         };
 
-        let damage = 7.5 + predator.hunger * 6.5;
-        predator.attack_cooldown = 0.9 + predator.hunger * 0.5;
-        predator.hunger = (predator.hunger - 0.22).max(0.0);
+        let base_damage = if is_npc {
+            4.5 + predator.hunger * 3.5
+        } else {
+            6.5 + predator.hunger * 5.0
+        };
+        predator.attack_cooldown = 1.8 + predator.hunger;
+        predator.hunger = if is_npc {
+            (predator.hunger - 0.28).max(0.0)
+        } else {
+            (predator.hunger - 0.55).max(0.0)
+        };
+        predator.satiated_days = if is_npc { 0.55 } else { 1.35 };
 
         if is_npc {
             if let Ok((_, _, mut npc, intent)) = npcs.get_mut(target) {
+                let damage = if intent.label == "Flee" || intent.label == "Retreat" {
+                    base_damage * 0.65
+                } else {
+                    base_damage
+                };
                 npc.health = (npc.health - damage).max(0.0);
                 if intent.label == "Defend" {
                     predator.health = (predator.health - 2.4).max(0.0);
@@ -293,7 +359,7 @@ fn predator_attack(
                 }
             }
         } else if let Ok((_, _, mut animal)) = animals.get_mut(target) {
-            animal.health = (animal.health - damage * 0.85).max(0.0);
+            animal.health = (animal.health - base_damage * 0.9).max(0.0);
         }
     }
 }

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::systems::logging::{EventLog, LogEventKind};
-use crate::ui::DiagnosticsUiCamera;
+use crate::ui::{DiagnosticsLogPane, DiagnosticsUiCamera};
 
 #[derive(Component)]
 struct EventLogText;
@@ -15,27 +15,31 @@ impl Plugin for LogPanelPlugin {
     }
 }
 
-fn spawn_log_panel(mut commands: Commands, diagnostics_camera: Res<DiagnosticsUiCamera>) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(346.0),
-            left: px(12.0),
-            width: px(420.0),
-            padding: UiRect::axes(px(14.0), px(12.0)),
-            border: UiRect::all(px(1.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.10, 0.08, 0.08, 0.94)),
-        BorderColor::all(Color::srgba(0.42, 0.24, 0.20, 0.86)),
-        UiTargetCamera(diagnostics_camera.0),
-    ))
-    .with_child((
-        Text::new("Event log"),
-        TextFont::from_font_size(14.0),
-        TextColor(Color::srgb(0.95, 0.95, 0.95)),
-        EventLogText,
-    ));
+fn spawn_log_panel(
+    mut commands: Commands,
+    diagnostics_camera: Res<DiagnosticsUiCamera>,
+    log_pane: Res<DiagnosticsLogPane>,
+) {
+    commands.entity(log_pane.0).with_children(|parent| {
+        parent
+            .spawn((
+                Node {
+                    width: percent(100.0),
+                    padding: UiRect::axes(px(14.0), px(12.0)),
+                    border: UiRect::all(px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.10, 0.08, 0.08, 0.94)),
+                BorderColor::all(Color::srgba(0.42, 0.24, 0.20, 0.86)),
+                UiTargetCamera(diagnostics_camera.0),
+            ))
+            .with_child((
+                Text::new("Event log"),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.95, 0.95, 0.95)),
+                EventLogText,
+            ));
+    });
 }
 
 fn update_log_panel(log: Res<EventLog>, mut query: Query<&mut Text, With<EventLogText>>) {

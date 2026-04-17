@@ -16,16 +16,26 @@ use log_panel::LogPanelPlugin;
 #[derive(Resource, Clone, Copy)]
 pub struct DiagnosticsUiCamera(pub Entity);
 
+#[derive(Resource, Clone, Copy)]
+pub struct DiagnosticsUiRoot(pub Entity);
+
+#[derive(Resource, Clone, Copy)]
+pub struct DiagnosticsSettingsPane(pub Entity);
+
+#[derive(Resource, Clone, Copy)]
+pub struct DiagnosticsLogPane(pub Entity);
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_diagnostics_window).add_plugins((
-            DashboardPlugin,
-            ControlsUiPlugin,
-            InspectorPlugin,
-            LogPanelPlugin,
-        ));
+        app.add_systems(Startup, spawn_diagnostics_window)
+            .add_plugins((
+                DashboardPlugin,
+                ControlsUiPlugin,
+                InspectorPlugin,
+                LogPanelPlugin,
+            ));
     }
 }
 
@@ -49,5 +59,50 @@ fn spawn_diagnostics_window(mut commands: Commands) {
         ))
         .id();
 
+    let diagnostics_root = commands
+        .spawn((
+            Node {
+                width: percent(100.0),
+                height: percent(100.0),
+                padding: UiRect::all(px(12.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12.0),
+                ..default()
+            },
+            UiTargetCamera(diagnostics_camera),
+        ))
+        .id();
+
+    let settings_pane = commands
+        .spawn((
+            Node {
+                width: percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12.0),
+                ..default()
+            },
+            UiTargetCamera(diagnostics_camera),
+        ))
+        .id();
+
+    let log_pane = commands
+        .spawn((
+            Node {
+                width: percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12.0),
+                ..default()
+            },
+            UiTargetCamera(diagnostics_camera),
+        ))
+        .id();
+
+    commands
+        .entity(diagnostics_root)
+        .add_children(&[settings_pane, log_pane]);
+
     commands.insert_resource(DiagnosticsUiCamera(diagnostics_camera));
+    commands.insert_resource(DiagnosticsUiRoot(diagnostics_root));
+    commands.insert_resource(DiagnosticsSettingsPane(settings_pane));
+    commands.insert_resource(DiagnosticsLogPane(log_pane));
 }
