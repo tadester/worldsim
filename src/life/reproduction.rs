@@ -5,6 +5,7 @@ use crate::agents::inventory::Inventory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcBundle, NpcHome};
 use crate::life::growth::Lifecycle;
+use crate::life::population::{PopulationKind, PopulationStats};
 use crate::magic::mana::ManaReservoir;
 use crate::magic::storage::ManaStorageStyle;
 use crate::systems::logging::{LogEvent, LogEventKind};
@@ -91,6 +92,7 @@ fn tree_seed_spread(
                     root_coord: spawn_coord,
                     stage: TreeStage::Sapling,
                     growth: 0.1,
+                    chop_progress: 0.0,
                     spread_progress: 0.0,
                 },
                 ManaReservoir {
@@ -107,39 +109,86 @@ fn tree_seed_spread(
 fn animal_reproduction(
     mut commands: Commands,
     clock: Res<SimulationClock>,
+    settings: Res<MapSettings>,
     mut writer: MessageWriter<LogEvent>,
-    mut animals: Query<(
-        Entity,
-        &Transform,
-        &mut Animal,
-        &mut Lifecycle,
-        Option<&Pregnancy>,
+    regions: Query<(&RegionTile, &RegionState)>,
+    mut animals: ParamSet<(
+        Query<(&Transform, &Animal)>,
+        Query<(
+            Entity,
+            &Transform,
+            &mut Animal,
+            &mut Lifecycle,
+            Option<&Pregnancy>,
+        )>,
     )>,
 ) {
     let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
 
-    for (entity, transform, mut animal, mut lifecycle, pregnancy) in &mut animals {
+    let mut animal_counts = std::collections::HashMap::<IVec2, usize>::new();
+    for (transform, animal) in &animals.p0() {
+        if animal.life_stage == AnimalLifeStage::Juvenile {
+            continue;
+        }
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        *animal_counts.entry(coord).or_insert(0) += 1;
+    }
+
+    let region_state_by_coord: std::collections::HashMap<IVec2, (f32, f32, f32)> = regions
+        .iter()
+        .map(|(tile, state)| {
+            (
+                tile.coord,
+                (
+                    tile.animal_capacity.max(0.1),
+                    state.forage,
+                    state.forage_capacity.max(0.1),
+                ),
+            )
+        })
+        .collect();
+
+    for (entity, transform, mut animal, mut lifecycle, pregnancy) in &mut animals.p1() {
         let mature = lifecycle.age_days >= lifecycle.maturity_age;
         let fertile = lifecycle.reproduction_cooldown <= 0.0;
-        let healthy = animal.health >= 25.0 && animal.energy >= 22.0;
+        let healthy = animal.health >= 28.0 && animal.energy >= 26.0;
         let adult = animal.life_stage == AnimalLifeStage::Adult;
 
         if !(mature && fertile && healthy && adult && pregnancy.is_none()) {
             continue;
         }
 
-        animal.reproduction_drive += delta_days * 0.55 * lifecycle.fertility.max(0.25);
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        let (capacity, forage, forage_capacity) = region_state_by_coord
+            .get(&coord)
+            .copied()
+            .unwrap_or((1.0, 0.0, 1.0));
+        let local_animals = animal_counts.get(&coord).copied().unwrap_or(0) as f32;
+        let crowding_ratio = local_animals / capacity.max(1.0);
+        let forage_ratio = (forage / forage_capacity).clamp(0.0, 1.0);
+        let ecological_headroom =
+            (1.0 - crowding_ratio * 0.85).clamp(0.05, 1.0) * (0.35 + forage_ratio * 0.65);
 
-        if animal.reproduction_drive < 0.55 {
+        if ecological_headroom < 0.18 {
+            continue;
+        }
+
+        animal.reproduction_drive +=
+            delta_days * 0.28 * lifecycle.fertility.max(0.20) * ecological_headroom;
+
+        if animal.reproduction_drive < 0.85 {
             continue;
         }
 
         animal.reproduction_drive = 0.0;
-        animal.energy = (animal.energy - 8.0).max(0.0);
-        lifecycle.reproduction_cooldown = 9.0;
+        animal.energy = (animal.energy - 10.0).max(0.0);
+        lifecycle.reproduction_cooldown = 13.0;
         commands.entity(entity).insert(Pregnancy {
-            gestation_days: 5.0,
-            offspring_health: 18.0,
+            gestation_days: 6.5,
+            offspring_health: 16.0,
             offspring_speed: animal.speed * 0.95,
         });
 
@@ -179,10 +228,10 @@ fn npc_reproduction(
         if pregnancy.is_some()
             || lifecycle.age_days < lifecycle.maturity_age
             || lifecycle.reproduction_cooldown > 0.0
-            || npc.health < 42.0
-            || needs.hunger > 0.45
-            || needs.fatigue > 0.7
-            || needs.safety < 0.42
+            || npc.health < 36.0
+            || needs.hunger > 0.52
+            || needs.fatigue > 0.78
+            || needs.safety < 0.38
         {
             continue;
         }
@@ -198,20 +247,21 @@ fn npc_reproduction(
             .unwrap_or_default();
 
         let resource_security = stockpile.food + inventory.food + stockpile.wood * 0.35;
-        if resource_security < 1.25 {
+        if resource_security < 0.9 {
             continue;
         }
 
         let entity_seed = entity.to_bits() as f32;
-        let cycle_days = 10.0 + (entity.to_bits() % 5) as f32 * 2.0;
+        let cycle_days = 7.0 + (entity.to_bits() % 4) as f32 * 1.5;
         let phase = (step.elapsed_days + entity_seed * 0.37) % cycle_days;
-        if phase > delta_days * 1.5 {
+        let conception_window = delta_days * (1.8 + lifecycle.fertility * 1.2);
+        if phase > conception_window {
             continue;
         }
 
-        lifecycle.reproduction_cooldown = 36.0;
+        lifecycle.reproduction_cooldown = 26.0;
         commands.entity(entity).insert(NpcPregnancy {
-            gestation_days: 12.0,
+            gestation_days: 10.0,
         });
         writer.write(LogEvent::new(
             LogEventKind::Birth,
@@ -227,6 +277,7 @@ fn resolve_npc_births(
     mut commands: Commands,
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
+    mut population: ResMut<PopulationStats>,
     mut writer: MessageWriter<LogEvent>,
     mut npcs: Query<(
         Entity,
@@ -265,6 +316,7 @@ fn resolve_npc_births(
             .with_age_days(0.0),
         );
         commands.entity(entity).remove::<NpcPregnancy>();
+        population.record_birth(PopulationKind::Npc, step.elapsed_days);
         writer.write(LogEvent::new(
             LogEventKind::Birth,
             format!("A child was born to {}", npc.name),
@@ -275,7 +327,9 @@ fn resolve_npc_births(
 fn resolve_animal_births(
     mut commands: Commands,
     clock: Res<SimulationClock>,
+    step: Res<SimulationStep>,
     mut writer: MessageWriter<LogEvent>,
+    mut population: ResMut<PopulationStats>,
     mut animals: Query<(Entity, &Transform, &mut Pregnancy)>,
 ) {
     let delta_days = clock.delta_days();
@@ -294,6 +348,7 @@ fn resolve_animal_births(
             pregnancy.offspring_speed,
         ));
         commands.entity(entity).remove::<Pregnancy>();
+        population.record_birth(PopulationKind::Animal, step.elapsed_days);
 
         writer.write(LogEvent::new(
             LogEventKind::Birth,

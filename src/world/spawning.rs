@@ -55,6 +55,7 @@ fn seed_world_entities(
                     root_coord: tile.coord,
                     stage: TreeStage::Sapling,
                     growth: 0.15 + tile.soil_fertility * 0.4,
+                    chop_progress: 0.0,
                     spread_progress: 0.0,
                 },
                 ManaReservoir {

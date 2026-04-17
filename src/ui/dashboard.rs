@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 
 use crate::agents::factions::Faction;
+use crate::life::population::PopulationStats;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
-use crate::ui::{DiagnosticsSettingsPane, DiagnosticsUiCamera};
+use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::{ClimateEventState, ClimateModel};
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
@@ -37,11 +38,7 @@ impl Plugin for DashboardPlugin {
     }
 }
 
-fn spawn_dashboard(
-    mut commands: Commands,
-    diagnostics_camera: Res<DiagnosticsUiCamera>,
-    settings_pane: Res<DiagnosticsSettingsPane>,
-) {
+fn spawn_dashboard(mut commands: Commands, settings_pane: Res<DiagnosticsSettingsPane>) {
     commands.entity(settings_pane.0).with_children(|parent| {
         parent
             .spawn((
@@ -53,7 +50,6 @@ fn spawn_dashboard(
                 },
                 BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
                 BorderColor::all(Color::srgba(0.24, 0.34, 0.44, 0.85)),
-                UiTargetCamera(diagnostics_camera.0),
             ))
             .with_child((
                 Text::new("Settings"),
@@ -70,6 +66,7 @@ fn update_dashboard_text(
     climate_events: Res<ClimateEventState>,
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
+    population: Res<PopulationStats>,
     log: Res<EventLog>,
     trends: Res<TrendHistory>,
     factions: Query<(Entity, &Faction)>,
@@ -158,7 +155,7 @@ fn update_dashboard_text(
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nClimate event: {}\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAnimal load: {:.2}x\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nClimate event: {}\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nLive births: {} (animals {} | npcs {})\nLive deaths: {} (animals {} | npcs {})\nNet growth: {:+}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
@@ -178,6 +175,7 @@ fn update_dashboard_text(
             },
             stats.avg_mana_density,
             stats.avg_animal_capacity,
+            stats.animal_load_ratio,
             stats.avg_tree_capacity,
             stats.avg_temperature,
             climate.season_label(),
@@ -192,6 +190,13 @@ fn update_dashboard_text(
             stats.total_wood_carried,
             stats.total_food_stockpiled,
             stats.total_wood_stockpiled,
+            population.total_births,
+            population.animal_births,
+            population.npc_births,
+            population.total_deaths,
+            population.animal_deaths,
+            population.npc_deaths,
+            population.net_growth(),
             recent_births,
             recent_deaths,
             if trend_line.is_empty() {

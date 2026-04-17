@@ -13,6 +13,7 @@ pub struct Tree {
     pub root_coord: IVec2,
     pub stage: TreeStage,
     pub growth: f32,
+    pub chop_progress: f32,
     pub spread_progress: f32,
 }
 
@@ -76,6 +77,7 @@ pub struct WorldStats {
     pub avg_tree_capacity: f32,
     pub avg_temperature: f32,
     pub avg_climate_pressure: f32,
+    pub animal_load_ratio: f32,
     pub total_forage: f32,
     pub total_tree_biomass: f32,
     pub total_food_carried: f32,
@@ -346,6 +348,7 @@ fn update_world_stats(
     stats.avg_tree_capacity = tree_capacity_total / divisor;
     stats.avg_temperature = temperature_total / divisor;
     stats.avg_climate_pressure = pressure_total / divisor;
+    stats.animal_load_ratio = stats.animals as f32 / animal_capacity_total.max(1.0);
     stats.total_forage = total_forage;
     stats.total_tree_biomass = total_tree_biomass;
     stats.total_food_carried = inventories.iter().map(|inv| inv.food).sum();

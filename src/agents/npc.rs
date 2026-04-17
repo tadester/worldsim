@@ -72,7 +72,7 @@ impl NpcBundle {
                 age_days: 0.0,
                 maturity_age: 120.0,
                 max_age: 24_000.0,
-                fertility: 0.25,
+                fertility: 0.40,
                 reproduction_cooldown: 0.0,
             },
             needs: Needs::default_humanoid(),

@@ -25,6 +25,10 @@ This project evolves in small “phases” to keep the simulation coherent and i
 - Phase 12: long-term climate/seasons
   - Seasonal temperature cycle plus slow drift create per-region climate pressure.
   - Resource regrowth scales with climate pressure and temperature.
+- Phase 13: population telemetry + ecological balancing
+  - Births and deaths are tracked live across the whole simulation, including animal/NPC splits.
+  - Animal reproduction now responds to local carrying capacity and forage pressure instead of growing unchecked.
+  - NPC family growth is more permissive when homes are safe and stocked.
 
 ## Current
 
