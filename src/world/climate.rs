@@ -19,26 +19,34 @@ impl Default for RegionClimate {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ClimateModel {
     pub year_length_days: f32,
+    pub day_length_days: f32,
     pub seasonal_amplitude: f32,
     pub drift_period_days: f32,
     pub drift_amplitude: f32,
     pub comfort_temp: f32,
     pub comfort_band: f32,
+    pub solar_warmth: f32,
+    pub lunar_cold: f32,
     pub current_offset: f32,
     pub current_season_phase: f32,
+    pub current_day_phase: f32,
 }
 
 impl Default for ClimateModel {
     fn default() -> Self {
         Self {
-            year_length_days: 60.0,
+            year_length_days: 365.0,
+            day_length_days: 1.0,
             seasonal_amplitude: 0.18,
-            drift_period_days: 420.0,
+            drift_period_days: 3650.0,
             drift_amplitude: 0.06,
             comfort_temp: 0.55,
             comfort_band: 0.14,
+            solar_warmth: 0.18,
+            lunar_cold: 0.12,
             current_offset: 0.0,
             current_season_phase: 0.0,
+            current_day_phase: 0.0,
         }
     }
 }
@@ -59,6 +67,15 @@ impl ClimateModel {
             2 => "Autumn",
             _ => "Winter",
         }
+    }
+
+    pub fn solar_factor(&self) -> f32 {
+        let cycle = self.current_day_phase.rem_euclid(1.0) * std::f32::consts::TAU;
+        (cycle.sin() * 0.5 + 0.5 - 0.15).clamp(0.0, 1.0) / 0.85
+    }
+
+    pub fn lunar_factor(&self) -> f32 {
+        (1.0 - self.solar_factor()).clamp(0.0, 1.0)
     }
 }
 
@@ -238,6 +255,12 @@ fn update_region_climate(
     let elapsed_days = step.elapsed_days;
     let season_phase = (elapsed_days / climate.year_length_days).rem_euclid(1.0);
     climate.current_season_phase = season_phase;
+    let day_phase = if climate.day_length_days > 0.0 {
+        (elapsed_days / climate.day_length_days).rem_euclid(1.0)
+    } else {
+        0.0
+    };
+    climate.current_day_phase = day_phase;
 
     let seasonal = (season_phase * std::f32::consts::TAU).sin();
     let drift = if climate.drift_period_days > 0.0 {
@@ -246,7 +269,11 @@ fn update_region_climate(
         0.0
     };
 
-    let global_offset = seasonal * climate.seasonal_amplitude + drift * climate.drift_amplitude;
+    let daylight_cycle = (day_phase * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2).sin();
+    let sun_warmth = daylight_cycle.max(0.0) * climate.solar_warmth;
+    let moon_cold = (-daylight_cycle).max(0.0) * climate.lunar_cold;
+    let global_offset =
+        seasonal * climate.seasonal_amplitude + drift * climate.drift_amplitude + sun_warmth - moon_cold;
     climate.current_offset = global_offset;
 
     let height = (settings.height.max(2) - 1) as f32;

@@ -34,4 +34,14 @@ fn keyboard_time_controls(keys: Res<ButtonInput<KeyCode>>, mut clock: ResMut<Sim
         clock.steps_per_frame = 120;
         clock.paused = false;
     }
+
+    if keys.just_pressed(KeyCode::Digit5) {
+        clock.steps_per_frame = 300;
+        clock.paused = false;
+    }
+
+    if keys.just_pressed(KeyCode::Digit6) {
+        clock.steps_per_frame = 900;
+        clock.paused = false;
+    }
 }

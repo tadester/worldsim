@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
 use crate::agents::inventory::Inventory;
 use crate::agents::needs::Needs;
-use crate::agents::npc::{Npc, NpcBundle, NpcHome};
+use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
 use crate::life::growth::Lifecycle;
 use crate::life::population::{PopulationKind, PopulationStats};
 use crate::magic::mana::ManaReservoir;
@@ -63,7 +63,7 @@ fn tree_seed_spread(
             break;
         }
 
-        tree.spread_progress += delta_days * 0.08 * biomass_ratio.max(0.2);
+        tree.spread_progress += delta_days * 0.0015 * biomass_ratio.max(0.25);
 
         if tree.spread_progress < 1.0 || biomass_ratio <= 0.25 {
             continue;
@@ -154,7 +154,7 @@ fn animal_reproduction(
     for (entity, transform, mut animal, mut lifecycle, pregnancy) in &mut animals.p1() {
         let mature = lifecycle.age_days >= lifecycle.maturity_age;
         let fertile = lifecycle.reproduction_cooldown <= 0.0;
-        let healthy = animal.health >= 28.0 && animal.energy >= 26.0;
+        let healthy = animal.health >= 30.0 && animal.energy >= 28.0;
         let adult = animal.life_stage == AnimalLifeStage::Adult;
 
         if !(mature && fertile && healthy && adult && pregnancy.is_none()) {
@@ -177,18 +177,18 @@ fn animal_reproduction(
         }
 
         animal.reproduction_drive +=
-            delta_days * 0.28 * lifecycle.fertility.max(0.20) * ecological_headroom;
+            delta_days * 0.0045 * lifecycle.fertility.max(0.16) * ecological_headroom;
 
-        if animal.reproduction_drive < 0.85 {
+        if animal.reproduction_drive < 1.0 {
             continue;
         }
 
         animal.reproduction_drive = 0.0;
-        animal.energy = (animal.energy - 10.0).max(0.0);
-        lifecycle.reproduction_cooldown = 13.0;
+        animal.energy = (animal.energy - 12.0).max(0.0);
+        lifecycle.reproduction_cooldown = 260.0;
         commands.entity(entity).insert(Pregnancy {
-            gestation_days: 6.5,
-            offspring_health: 16.0,
+            gestation_days: 160.0,
+            offspring_health: 22.0,
             offspring_speed: animal.speed * 0.95,
         });
 
@@ -207,16 +207,27 @@ fn npc_reproduction(
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
     mut writer: MessageWriter<LogEvent>,
-    shelters: Query<Option<&ShelterStockpile>>,
-    mut npcs: Query<(
-        Entity,
-        &Npc,
-        &Transform,
-        &Needs,
-        &Inventory,
-        &NpcHome,
-        &mut Lifecycle,
-        Option<&NpcPregnancy>,
+    shelters: Query<(&crate::world::resources::Shelter, Option<&ShelterStockpile>)>,
+    mut npcs: ParamSet<(
+        Query<(
+            Entity,
+            &Npc,
+            &Transform,
+            &Needs,
+            &NpcHome,
+            &Lifecycle,
+            Option<&NpcPregnancy>,
+        )>,
+        Query<(
+            Entity,
+            &Npc,
+            &Transform,
+            &Needs,
+            &Inventory,
+            &NpcHome,
+            &mut Lifecycle,
+            Option<&NpcPregnancy>,
+        )>,
     )>,
 ) {
     let delta_days = clock.delta_days();
@@ -224,14 +235,40 @@ fn npc_reproduction(
         return;
     }
 
-    for (entity, npc, transform, needs, inventory, home, mut lifecycle, pregnancy) in &mut npcs {
+    let partner_candidates: Vec<(Entity, Vec2, Option<Entity>)> = npcs
+        .p0()
+        .iter()
+        .filter_map(
+            |(entity, npc, transform, needs, home, lifecycle, pregnancy)| {
+                if npc.sex != NpcSex::Male
+                    || pregnancy.is_some()
+                    || lifecycle.age_days < lifecycle.maturity_age
+                    || lifecycle.reproduction_cooldown > 0.0
+                    || npc.health < 32.0
+                    || needs.hunger > 0.75
+                    || needs.fatigue > 0.92
+                    || needs.safety < 0.18
+                {
+                    None
+                } else {
+                    Some((entity, transform.translation.truncate(), home.shelter))
+                }
+            },
+        )
+        .collect();
+
+    for (entity, npc, transform, needs, inventory, home, mut lifecycle, pregnancy) in &mut npcs.p1()
+    {
+        if npc.sex != NpcSex::Female {
+            continue;
+        }
         if pregnancy.is_some()
             || lifecycle.age_days < lifecycle.maturity_age
             || lifecycle.reproduction_cooldown > 0.0
-            || npc.health < 36.0
-            || needs.hunger > 0.52
-            || needs.fatigue > 0.78
-            || needs.safety < 0.38
+            || npc.health < 32.0
+            || needs.hunger > (0.74 - npc.reproduction_drive * 0.10).clamp(0.40, 0.82)
+            || needs.fatigue > (0.90 - npc.reproduction_drive * 0.08).clamp(0.55, 0.92)
+            || needs.safety < (0.18 - npc.risk_tolerance * 0.04).clamp(0.05, 0.22)
         {
             continue;
         }
@@ -239,29 +276,52 @@ fn npc_reproduction(
         let Some(home_entity) = home.shelter else {
             continue;
         };
-        let stockpile = shelters
+        let (shelter, stockpile) = shelters
             .get(home_entity)
             .ok()
-            .flatten()
-            .copied()
-            .unwrap_or_default();
+            .map(|(shelter, stockpile)| (*shelter, stockpile.copied().unwrap_or_default()))
+            .unwrap_or((
+                crate::world::resources::Shelter {
+                    integrity: 0.0,
+                    safety_bonus: 0.0,
+                    insulation: 0.0,
+                },
+                ShelterStockpile::default(),
+            ));
 
-        let resource_security = stockpile.food + inventory.food + stockpile.wood * 0.35;
-        if resource_security < 0.9 {
+        let resource_security =
+            stockpile.food + inventory.food + stockpile.wood * 0.30 + shelter.integrity * 2.0;
+        if resource_security < (1.35 - npc.reproduction_drive * 0.22).clamp(0.8, 1.35) {
+            continue;
+        }
+
+        let mother_pos = transform.translation.truncate();
+        let partner_match = partner_candidates
+            .iter()
+            .any(|(partner_entity, pos, partner_home)| {
+                if *partner_entity == entity {
+                    return false;
+                }
+                let distance = mother_pos.distance(*pos);
+                (*partner_home == Some(home_entity) && distance < 84.0) || distance < 36.0
+            });
+        if !partner_match {
             continue;
         }
 
         let entity_seed = entity.to_bits() as f32;
-        let cycle_days = 7.0 + (entity.to_bits() % 4) as f32 * 1.5;
+        let cycle_days = (22.0 - npc.reproduction_drive * 6.0).clamp(10.0, 24.0);
         let phase = (step.elapsed_days + entity_seed * 0.37) % cycle_days;
-        let conception_window = delta_days * (1.8 + lifecycle.fertility * 1.2);
+        let conception_window =
+            delta_days * (8.0 + lifecycle.fertility * 4.5 + npc.reproduction_drive * 3.0);
         if phase > conception_window {
             continue;
         }
 
-        lifecycle.reproduction_cooldown = 26.0;
+        lifecycle.reproduction_cooldown =
+            (120.0 - npc.reproduction_drive * 28.0).clamp(72.0, 120.0);
         commands.entity(entity).insert(NpcPregnancy {
-            gestation_days: 10.0,
+            gestation_days: 280.0,
         });
         writer.write(LogEvent::new(
             LogEventKind::Birth,
@@ -301,6 +361,20 @@ fn resolve_npc_births(
 
         let offset = Vec2::new(transform.translation.y.sin(), transform.translation.x.cos()) * 16.0;
         let child_name = format!("{} Kin {}", npc.name, step.tick % 10_000);
+        let birth_seed = step.tick + entity.to_bits();
+        let child_sex = if birth_seed.is_multiple_of(2) {
+            NpcSex::Female
+        } else {
+            NpcSex::Male
+        };
+        let child_gender = if birth_seed.is_multiple_of(7) {
+            NpcGender::Nonbinary
+        } else if child_sex == NpcSex::Female {
+            NpcGender::Woman
+        } else {
+            NpcGender::Man
+        };
+        let child_seed = (birth_seed % 17) as f32 / 16.0;
         commands.spawn(
             NpcBundle::new(
                 transform.translation.truncate() + offset,
@@ -312,6 +386,14 @@ fn resolve_npc_births(
                     stability: reservoir.stability,
                 },
                 *mana_style,
+            )
+            .with_identity(child_sex, child_gender)
+            .with_tooling(0.1, 0.0)
+            .with_drives(
+                (npc.reproduction_drive * 0.82 + 0.25 + child_seed * 0.22).clamp(0.1, 1.6),
+                (npc.discovery_drive * 0.78 + 0.20 + child_seed * 0.18).clamp(0.1, 1.6),
+                (npc.aggression_drive * 0.72 + child_seed * 0.30).clamp(0.0, 1.6),
+                (npc.risk_tolerance * 0.80 + 0.15 + child_seed * 0.16).clamp(0.0, 1.4),
             )
             .with_age_days(0.0),
         );

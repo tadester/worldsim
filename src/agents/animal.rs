@@ -65,10 +65,10 @@ impl AnimalBundle {
             },
             lifecycle: Lifecycle {
                 age_days: 0.0,
-                maturity_age: 18.0,
-                max_age: 220.0,
-                fertility: 0.75,
-                reproduction_cooldown: 4.0,
+                maturity_age: 420.0,
+                max_age: 4_380.0,
+                fertility: 0.32,
+                reproduction_cooldown: 180.0,
             },
         }
     }

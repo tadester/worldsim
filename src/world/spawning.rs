@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::agents::animal::{Animal, AnimalBundle};
-use crate::agents::npc::NpcBundle;
+use crate::agents::npc::{NpcBundle, NpcGender, NpcSex};
 use crate::magic::mana::ManaReservoir;
 use crate::magic::storage::ManaStorageStyle;
 use crate::systems::simulation::SimulationStep;
@@ -17,8 +17,8 @@ pub struct AnimalSpawnPolicy {
 impl Default for AnimalSpawnPolicy {
     fn default() -> Self {
         Self {
-            replenish_below: 10,
-            replenish_to: 14,
+            replenish_below: 4,
+            replenish_to: 6,
         }
     }
 }
@@ -44,6 +44,18 @@ fn seed_world_entities(
     for (tile, transform) in &tiles {
         if (tile.coord.x + tile.coord.y) % 3 == 0 {
             let offset = seeded_offset(tree_index as i32, settings.tile_size * 0.2);
+            let growth = match (tile.coord.x + tile.coord.y) % 7 {
+                0 => 0.95,
+                1 | 2 => 0.62,
+                _ => 0.24 + tile.soil_fertility * 0.22,
+            };
+            let stage = if growth >= 0.9 {
+                TreeStage::Mature
+            } else if growth >= 0.45 {
+                TreeStage::Young
+            } else {
+                TreeStage::Sapling
+            };
             commands.spawn((
                 Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
                 Transform::from_xyz(
@@ -53,8 +65,8 @@ fn seed_world_entities(
                 ),
                 Tree {
                     root_coord: tile.coord,
-                    stage: TreeStage::Sapling,
-                    growth: 0.15 + tile.soil_fertility * 0.4,
+                    stage,
+                    growth,
                     chop_progress: 0.0,
                     spread_progress: 0.0,
                 },
@@ -67,9 +79,28 @@ fn seed_world_entities(
             tree_index += 1;
         }
 
-        if tile.coord.y == settings.height / 2 && tile.coord.x % 8 == 0 {
+        if tile.coord.y == settings.height / 2 && tile.coord.x % 4 == 0 {
             let offset = seeded_offset(npc_index as i32 + 41, settings.tile_size * 0.12);
-            let age_days = 96.0 + ((npc_index % 5) as f32 * 28.0);
+            let age_days = (18.0 + (npc_index % 6) as f32 * 3.5) * 365.0;
+            let sex = if npc_index % 2 == 0 {
+                NpcSex::Female
+            } else {
+                NpcSex::Male
+            };
+            let gender = match npc_index % 5 {
+                0 => NpcGender::Nonbinary,
+                _ if sex == NpcSex::Female => NpcGender::Woman,
+                _ => NpcGender::Man,
+            };
+            let tool_base = if npc_index % 3 == 0 { 0.65 } else { 0.25 };
+            let reproduction_drive = 1.05 + (npc_index % 4) as f32 * 0.12;
+            let discovery_drive = 0.85 + ((npc_index + 1) % 5) as f32 * 0.10;
+            let aggression_drive = match npc_index % 6 {
+                0 => 1.2,
+                1 => 0.75,
+                _ => 0.25 + (npc_index % 3) as f32 * 0.10,
+            };
+            let risk_tolerance = 0.55 + (npc_index % 5) as f32 * 0.12;
             commands.spawn(
                 NpcBundle::new(
                     transform.translation.truncate() + offset,
@@ -85,6 +116,14 @@ fn seed_world_entities(
                         circulation: 0.45,
                         distribution: 0.3,
                     },
+                )
+                .with_identity(sex, gender)
+                .with_tooling(0.55 + tool_base * 0.25, tool_base)
+                .with_drives(
+                    reproduction_drive,
+                    discovery_drive,
+                    aggression_drive,
+                    risk_tolerance,
                 )
                 .with_age_days(age_days),
             );
@@ -137,7 +176,7 @@ fn maintain_animal_population(
                 28.0 + tile.soil_fertility * 10.0,
                 0.8 + tile.mana_density * 0.3,
             )
-            .with_age_days(3.0 + idx as f32 * 1.5),
+            .with_age_days(180.0 + idx as f32 * 45.0),
         );
     }
 }

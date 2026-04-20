@@ -4,7 +4,7 @@ use crate::agents::animal::Animal;
 use crate::agents::npc::Npc;
 use crate::life::growth::Lifecycle;
 use crate::life::population::{PopulationKind, PopulationStats};
-use crate::systems::logging::{LogEvent, LogEventKind};
+use crate::systems::logging::{LogEvent, LogEventKind, NpcDeathEvent};
 use crate::systems::simulation::SimulationStep;
 
 pub struct DeathPlugin;
@@ -20,6 +20,7 @@ fn cleanup_dead_entities(
     step: Res<SimulationStep>,
     mut population: ResMut<PopulationStats>,
     mut writer: MessageWriter<LogEvent>,
+    mut npc_death_writer: MessageWriter<NpcDeathEvent>,
     animals: Query<(Entity, &Lifecycle, &Animal)>,
     npcs: Query<(Entity, &Lifecycle, &Npc)>,
 ) {
@@ -45,12 +46,27 @@ fn cleanup_dead_entities(
     }
 
     for (entity, lifecycle, npc) in &npcs {
-        if lifecycle.age_days >= lifecycle.max_age || npc.health <= 0.0 {
+        let reason = if lifecycle.age_days >= lifecycle.max_age {
+            Some("old age")
+        } else if npc.exposure > 1.0 && npc.health <= 0.0 {
+            Some("cold exposure")
+        } else if npc.health <= 0.0 {
+            Some("injury, starvation, or exposure")
+        } else {
+            None
+        };
+
+        if let Some(reason) = reason {
             commands.entity(entity).despawn();
             population.record_death(PopulationKind::Npc, step.elapsed_days);
+            npc_death_writer.write(NpcDeathEvent::new(
+                step.elapsed_days,
+                npc.name.clone(),
+                reason.to_string(),
+            ));
             writer.write(LogEvent::new(
                 LogEventKind::Death,
-                format!("{} died", npc.name),
+                format!("{} died from {reason}", npc.name),
             ));
         }
     }

@@ -33,8 +33,8 @@ fn advance_lifecycle(
     for (mut animal, mut lifecycle, pregnancy) in &mut animals {
         lifecycle.age_days += delta_days;
         lifecycle.reproduction_cooldown = (lifecycle.reproduction_cooldown - delta_days).max(0.0);
-        animal.health = (animal.health - delta_days * 0.04).max(0.0);
-        animal.energy = (animal.energy - delta_days * 0.2).max(0.0);
+        animal.health = (animal.health - delta_days * 0.0015).max(0.0);
+        animal.energy = (animal.energy - delta_days * 0.06).max(0.0);
         animal.life_stage = if lifecycle.age_days < lifecycle.maturity_age {
             AnimalLifeStage::Juvenile
         } else if lifecycle.age_days > lifecycle.max_age * 0.75 {
@@ -44,14 +44,14 @@ fn advance_lifecycle(
         };
 
         if pregnancy.is_some() {
-            animal.energy = (animal.energy - delta_days * 0.25).max(0.0);
+            animal.energy = (animal.energy - delta_days * 0.10).max(0.0);
         }
     }
 
     for (mut npc, mut lifecycle) in &mut npcs {
         lifecycle.age_days += delta_days;
         lifecycle.reproduction_cooldown = (lifecycle.reproduction_cooldown - delta_days).max(0.0);
-        npc.health = (npc.health - delta_days * 0.02).max(0.0);
+        npc.health = (npc.health - delta_days * 0.0005).max(0.0);
     }
 }
 
@@ -70,14 +70,14 @@ fn grow_trees(
                 continue;
             }
 
-            let consumed = (delta_days * 0.05).min(state.tree_biomass);
+            let consumed = (delta_days * 0.0012).min(state.tree_biomass);
             state.tree_biomass -= consumed;
             local_growth_factor =
-                (consumed / (delta_days * 0.05).max(f32::EPSILON)).clamp(0.1, 1.5);
+                (consumed / (delta_days * 0.0012).max(f32::EPSILON)).clamp(0.1, 1.5);
             break;
         }
 
-        tree.growth += delta_days * 0.05 * local_growth_factor;
+        tree.growth += delta_days * 0.0009 * local_growth_factor;
 
         if tree.growth >= 0.9 {
             tree.stage = TreeStage::Mature;

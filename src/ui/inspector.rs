@@ -117,6 +117,7 @@ fn update_inspector(
     climates: Query<(&RegionTile, &RegionClimate)>,
     npcs: Query<(
         &Npc,
+        &Lifecycle,
         &Needs,
         &Memory,
         &NpcIntent,
@@ -181,8 +182,18 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
-        } else if let Ok((npc, needs, memory, intent, home, inventory, mana, transform, member)) =
-            npcs.get(entity)
+        } else if let Ok((
+            npc,
+            lifecycle,
+            needs,
+            memory,
+            intent,
+            home,
+            inventory,
+            mana,
+            transform,
+            member,
+        )) = npcs.get(entity)
         {
             let home_line = home
                 .shelter
@@ -241,8 +252,11 @@ fn update_inspector(
                 .unwrap_or_else(|| "Climate: n/a".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nDrives R/D/A/Risk: {:.2}/{:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
+                npc.sex.label(),
+                npc.gender.label(),
+                lifecycle.age_days / 365.0,
                 faction_line,
                 coord.x,
                 coord.y,
@@ -253,8 +267,15 @@ fn update_inspector(
                 needs.hunger,
                 needs.safety,
                 needs.curiosity,
+                npc.reproduction_drive,
+                npc.discovery_drive,
+                npc.aggression_drive,
+                npc.risk_tolerance,
                 inventory.food,
                 inventory.wood,
+                npc.tool_knowledge,
+                npc.woodcutting_tools,
+                npc.exposure,
                 mana.stored,
                 mana.capacity,
                 home_line,

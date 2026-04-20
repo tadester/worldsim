@@ -21,12 +21,53 @@ struct NpcLeg;
 #[derive(Component)]
 struct NpcAura;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcSex {
+    Female,
+    Male,
+}
+
+impl NpcSex {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Female => "Female",
+            Self::Male => "Male",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcGender {
+    Woman,
+    Man,
+    Nonbinary,
+}
+
+impl NpcGender {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Woman => "Woman",
+            Self::Man => "Man",
+            Self::Nonbinary => "Nonbinary",
+        }
+    }
+}
+
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
     pub name: String,
     pub health: f32,
     pub curiosity: f32,
     pub speed: f32,
+    pub sex: NpcSex,
+    pub gender: NpcGender,
+    pub tool_knowledge: f32,
+    pub woodcutting_tools: f32,
+    pub exposure: f32,
+    pub reproduction_drive: f32,
+    pub discovery_drive: f32,
+    pub aggression_drive: f32,
+    pub risk_tolerance: f32,
 }
 
 #[derive(Component, Debug, Clone, Default)]
@@ -67,12 +108,21 @@ impl NpcBundle {
                 health,
                 curiosity: 0.6,
                 speed: 28.0,
+                sex: NpcSex::Female,
+                gender: NpcGender::Woman,
+                tool_knowledge: 0.0,
+                woodcutting_tools: 0.0,
+                exposure: 0.0,
+                reproduction_drive: 0.9,
+                discovery_drive: 0.9,
+                aggression_drive: 0.3,
+                risk_tolerance: 0.5,
             },
             lifecycle: Lifecycle {
                 age_days: 0.0,
-                maturity_age: 120.0,
-                max_age: 24_000.0,
-                fertility: 0.40,
+                maturity_age: 16.0 * 365.0,
+                max_age: 86.0 * 365.0,
+                fertility: 0.9,
                 reproduction_cooldown: 0.0,
             },
             needs: Needs::default_humanoid(),
@@ -89,6 +139,32 @@ impl NpcBundle {
 
     pub fn with_age_days(mut self, age_days: f32) -> Self {
         self.lifecycle.age_days = age_days.max(0.0);
+        self
+    }
+
+    pub fn with_identity(mut self, sex: NpcSex, gender: NpcGender) -> Self {
+        self.npc.sex = sex;
+        self.npc.gender = gender;
+        self
+    }
+
+    pub fn with_tooling(mut self, knowledge: f32, tools: f32) -> Self {
+        self.npc.tool_knowledge = knowledge.clamp(0.0, 1.0);
+        self.npc.woodcutting_tools = tools.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn with_drives(
+        mut self,
+        reproduction_drive: f32,
+        discovery_drive: f32,
+        aggression_drive: f32,
+        risk_tolerance: f32,
+    ) -> Self {
+        self.npc.reproduction_drive = reproduction_drive.clamp(0.1, 1.6);
+        self.npc.discovery_drive = discovery_drive.clamp(0.1, 1.6);
+        self.npc.aggression_drive = aggression_drive.clamp(0.0, 1.6);
+        self.npc.risk_tolerance = risk_tolerance.clamp(0.0, 1.4);
         self
     }
 }

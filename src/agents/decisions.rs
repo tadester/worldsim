@@ -11,9 +11,9 @@ use crate::agents::predator::Predator;
 use crate::agents::relationships::Relationships;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
-use crate::world::climate::RegionClimate;
+use crate::world::climate::{ClimateModel, RegionClimate};
 use crate::world::map::{MapSettings, RegionState, RegionTile};
-use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
+use crate::world::resources::{Campfire, Shelter, ShelterStockpile, Tree, TreeStage};
 use crate::world::territory::Territory;
 
 #[derive(Component, Debug, Clone)]
@@ -42,13 +42,17 @@ impl Plugin for DecisionPlugin {
                 avoid_predators,
                 apply_npc_intents,
                 harvest_npc_resources,
+                develop_and_craft_tools,
+                resolve_npc_violence,
                 transfer_home_stockpiles,
                 withdraw_home_food,
                 consume_carried_food,
                 apply_shelter_comfort.after(apply_npc_intents),
                 apply_climate_stress.after(apply_shelter_comfort),
+                tend_npc_campfires.after(apply_climate_stress),
                 repair_npc_shelters.after(apply_climate_stress),
-                build_npc_shelters.after(repair_npc_shelters),
+                build_npc_campfires.after(tend_npc_campfires),
+                build_npc_shelters.after(build_npc_campfires),
             )
                 .chain(),
         );
@@ -64,6 +68,8 @@ fn evaluate_npc_intents(
         Option<&Territory>,
     )>,
     npc_positions: Query<(Entity, &Transform, Option<&FactionMember>), With<Npc>>,
+    predators: Query<(Entity, &Transform), With<Predator>>,
+    campfires: Query<(Entity, &Campfire, &Transform, Option<&FactionMember>)>,
     shelters: Query<(
         Entity,
         &Shelter,
@@ -84,7 +90,7 @@ fn evaluate_npc_intents(
         Option<&FactionMember>,
     )>,
 ) {
-    let mut region_index: HashMap<IVec2, (RegionTile, RegionState, f32, Option<Entity>)> =
+    let mut region_index: HashMap<IVec2, (RegionTile, RegionState, f32, f32, Option<Entity>)> =
         HashMap::new();
     let mut best_forage = -1.0;
     let mut best_forage_coord = IVec2::ZERO;
@@ -103,7 +109,10 @@ fn evaluate_npc_intents(
 
     for (tile, state, climate, territory) in &regions {
         let owner = territory.and_then(|territory| territory.owner);
-        region_index.insert(tile.coord, (*tile, *state, climate.pressure, owner));
+        region_index.insert(
+            tile.coord,
+            (*tile, *state, climate.pressure, tile.temperature, owner),
+        );
 
         if state.forage > best_forage {
             best_forage = state.forage;
@@ -181,6 +190,10 @@ fn evaluate_npc_intents(
             )
         })
         .collect();
+    let predator_positions: Vec<(Entity, Vec2)> = predators
+        .iter()
+        .map(|(entity, transform)| (entity, transform.translation.truncate()))
+        .collect();
 
     for (
         entity,
@@ -249,10 +262,12 @@ fn evaluate_npc_intents(
                 .unwrap_or(0.0)
         };
 
-        let (current_forage, local_biomass, local_pressure) = region_index
+        let (current_forage, local_biomass, local_pressure, local_temperature) = region_index
             .get(&current_coord)
-            .map(|(_, state, pressure, _)| (state.forage, state.tree_biomass, *pressure))
-            .unwrap_or((0.0, 0.0, 0.0));
+            .map(|(_, state, pressure, temperature, _)| {
+                (state.forage, state.tree_biomass, *pressure, *temperature)
+            })
+            .unwrap_or((0.0, 0.0, 0.0, 0.5));
 
         if current_forage > 0.5 {
             memory.last_forage_coord = Some(current_coord);
@@ -276,28 +291,75 @@ fn evaluate_npc_intents(
         });
 
         let food_ratio = inventory.food_ratio();
-        let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4) * (1.15 - food_ratio * 0.55);
-        let social_utility = (1.0 - needs.social) * relationships.social_drive;
-        let safety_utility =
-            (1.0 - needs.safety) * (0.8 + relationships.fear) + local_pressure * 0.55;
-        let curiosity_utility = needs.curiosity * npc.curiosity * 0.8;
+        let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4)
+            * (1.15 - food_ratio * 0.55)
+            * (0.85 + npc.reproduction_drive * 0.35);
+        let social_utility = (1.0 - needs.social)
+            * relationships.social_drive
+            * (0.7 + npc.reproduction_drive * 0.45);
+        let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear)
+            + local_pressure * 0.55
+            - npc.risk_tolerance * 0.20;
+        let curiosity_utility =
+            needs.curiosity * npc.curiosity * 0.8 * (0.75 + npc.discovery_drive * 0.5);
+        let cold_risk = ((0.42 - local_temperature).max(0.0) / 0.42).clamp(0.0, 1.0)
+            * (0.55 + local_pressure * 0.45);
+        let nearest_fire = campfires
+            .iter()
+            .filter(|(_, _, _, member)| {
+                member.map(|member| member.faction) == faction || member.is_none() || faction.is_none()
+            })
+            .min_by(|(_, _, a, _), (_, _, b, _)| {
+                pos.distance(a.translation.truncate())
+                    .total_cmp(&pos.distance(b.translation.truncate()))
+            })
+            .map(|(_, fire, transform, _)| (*fire, transform.translation.truncate()));
         let shelter_nearby = shelters.iter().any(|(_, _, _, shelter_transform, _)| {
             shelter_transform.translation.truncate().distance(pos) < 42.0
         });
+        let fire_nearby = nearest_fire
+            .map(|(_, fire_pos)| pos.distance(fire_pos) < 38.0)
+            .unwrap_or(false);
         let carrying_ratio = inventory.carry_ratio();
+        let has_usable_tools = npc.woodcutting_tools > 0.18;
         let build_utility = if needs.safety < 0.78
-            && local_biomass > 0.9
+            && local_biomass > 0.5
             && !shelter_nearby
             && home.shelter.is_none()
-            && inventory.wood >= 1.1
+            && inventory.wood >= 0.9
         {
-            ((0.9 - needs.safety) + local_biomass * 0.18) * (1.08 - local_pressure * 0.55)
+            ((0.9 - needs.safety)
+                + local_biomass * 0.18
+                + cold_risk * 1.25
+                + npc.exposure * 0.75
+                + npc.reproduction_drive * 0.45)
+                * (1.12 - local_pressure * 0.35)
         } else {
             0.0
         };
+        let build_fire_utility = if inventory.wood >= 0.35 && !fire_nearby {
+            cold_risk * 1.6 + npc.exposure * 1.4 + (1.0 - needs.safety) * 0.35
+        } else {
+            0.0
+        };
+        let tend_fire_utility = nearest_fire
+            .map(|(fire, fire_pos)| {
+                let distance = pos.distance(fire_pos);
+                if inventory.wood < 0.12 || distance > 52.0 {
+                    0.0
+                } else {
+                    ((1.0 - fire.ember) + (1.0 - fire.fuel / fire.max_fuel.max(0.1))) * 0.8
+                        + cold_risk * 1.1
+                        + npc.exposure * 1.2
+                }
+            })
+            .unwrap_or(0.0);
         let rest_utility = if rest_position.is_some() {
             let home_factor = if home_position.is_some() { 1.0 } else { 0.7 };
-            (needs.fatigue * 1.25 + (1.0 - needs.safety) * 0.25 + rest_integrity * 0.15)
+            (needs.fatigue * 1.25
+                + (1.0 - needs.safety) * 0.25
+                + rest_integrity * 0.15
+                + npc.exposure * 0.80)
                 * home_factor
         } else {
             0.0
@@ -312,21 +374,41 @@ fn evaluate_npc_intents(
         };
         let wood_total = home_stockpiled_wood + inventory.wood;
         let wants_wood = (home_position.is_some() && home_integrity < 0.85)
-            || (home_position.is_none() && (needs.safety < 0.82 || wood_total < 1.2));
+            || (home_position.is_none()
+                && (needs.safety < 0.82 || wood_total < 1.2 || npc.reproduction_drive > 1.0));
         let gather_wood_utility =
-            if wants_wood && wood_total < 2.5 && (local_biomass > 0.25 || best_biomass > 0.35) {
+            if wants_wood && wood_total < 3.2 && (local_biomass > 0.25 || best_biomass > 0.35) {
                 (1.0 - needs.safety) * 0.95
                     + (1.0 - home_integrity) * 0.95
                     + local_biomass * 0.14
                     + if home_position.is_none() { 0.42 } else { 0.0 }
+                    + cold_risk * 0.55
+                    + if has_usable_tools { 0.25 } else { 0.0 }
             } else {
                 0.0
             };
-        let stockpile_utility = if home_position.is_some() && carrying_ratio > 0.55 {
-            carrying_ratio * 0.85 + (inventory.food + inventory.wood) * 0.03
+        let toolmaking_utility = if wants_wood && (!has_usable_tools || npc.tool_knowledge < 1.0) {
+            0.65 + npc.discovery_drive * 0.55 + cold_risk * 0.30 + npc.reproduction_drive * 0.15
         } else {
             0.0
         };
+        let stockpile_utility = if home_position.is_some() && carrying_ratio > 0.55 {
+            carrying_ratio * 0.85
+                + (inventory.food + inventory.wood) * 0.03
+                + npc.reproduction_drive * 0.22
+        } else {
+            0.0
+        };
+        let violence_utility = predator_positions
+            .iter()
+            .map(|(_, predator_pos)| pos.distance(*predator_pos))
+            .filter(|distance| *distance < 130.0)
+            .min_by(|a, b| a.total_cmp(b))
+            .map(|distance| {
+                let proximity = (1.0 - distance / 130.0).clamp(0.0, 1.0);
+                proximity * (npc.aggression_drive * 1.2 + npc.risk_tolerance * 0.5)
+            })
+            .unwrap_or(0.0);
 
         let best_forage_for_faction = faction.and_then(|faction| {
             best_forage_by_faction
@@ -361,10 +443,14 @@ fn evaluate_npc_intents(
             && rest_utility >= social_utility
             && rest_utility >= curiosity_utility
             && rest_utility >= build_utility
+            && rest_utility >= build_fire_utility
+            && rest_utility >= tend_fire_utility
             && rest_utility >= repair_utility
             && rest_utility >= gather_wood_utility
+            && rest_utility >= toolmaking_utility
+            && rest_utility >= violence_utility
             && rest_utility >= stockpile_utility
-            && needs.fatigue > 0.55
+            && (needs.fatigue > 0.55 || npc.exposure > 0.35)
         {
             (
                 "Rest".to_string(),
@@ -375,8 +461,12 @@ fn evaluate_npc_intents(
             && repair_utility >= social_utility
             && repair_utility >= curiosity_utility
             && repair_utility >= build_utility
+            && repair_utility >= build_fire_utility
+            && repair_utility >= tend_fire_utility
             && repair_utility >= rest_utility
             && repair_utility >= gather_wood_utility
+            && repair_utility >= toolmaking_utility
+            && repair_utility >= violence_utility
             && repair_utility >= stockpile_utility
             && home_position.is_some()
             && home_integrity < 0.85
@@ -390,9 +480,13 @@ fn evaluate_npc_intents(
             && stockpile_utility >= social_utility
             && stockpile_utility >= curiosity_utility
             && stockpile_utility >= build_utility
+            && stockpile_utility >= build_fire_utility
+            && stockpile_utility >= tend_fire_utility
             && stockpile_utility >= rest_utility
             && stockpile_utility >= repair_utility
             && stockpile_utility >= gather_wood_utility
+            && stockpile_utility >= toolmaking_utility
+            && stockpile_utility >= violence_utility
             && home_position.is_some()
         {
             ("Stockpile".to_string(), home_position.unwrap())
@@ -401,8 +495,12 @@ fn evaluate_npc_intents(
             && gather_wood_utility >= social_utility
             && gather_wood_utility >= curiosity_utility
             && gather_wood_utility >= build_utility
+            && gather_wood_utility >= build_fire_utility
+            && gather_wood_utility >= tend_fire_utility
             && gather_wood_utility >= rest_utility
             && gather_wood_utility >= repair_utility
+            && gather_wood_utility >= toolmaking_utility
+            && gather_wood_utility >= violence_utility
             && gather_wood_utility >= stockpile_utility
         {
             let target_coord = if local_biomass > 0.25 {
@@ -414,6 +512,65 @@ fn evaluate_npc_intents(
                 "Gather Wood".to_string(),
                 tile_center(&settings, target_coord),
             )
+        } else if tend_fire_utility >= hunger_utility
+            && tend_fire_utility >= safety_utility
+            && tend_fire_utility >= social_utility
+            && tend_fire_utility >= curiosity_utility
+            && tend_fire_utility >= build_utility
+            && tend_fire_utility >= build_fire_utility
+            && tend_fire_utility >= rest_utility
+            && tend_fire_utility >= repair_utility
+            && tend_fire_utility >= gather_wood_utility
+            && tend_fire_utility >= toolmaking_utility
+            && tend_fire_utility >= violence_utility
+            && tend_fire_utility >= stockpile_utility
+        {
+            (
+                "Tend Fire".to_string(),
+                nearest_fire.map(|(_, fire_pos)| fire_pos).unwrap_or(pos),
+            )
+        } else if build_fire_utility >= hunger_utility
+            && build_fire_utility >= safety_utility
+            && build_fire_utility >= social_utility
+            && build_fire_utility >= curiosity_utility
+            && build_fire_utility >= build_utility
+            && build_fire_utility >= rest_utility
+            && build_fire_utility >= repair_utility
+            && build_fire_utility >= gather_wood_utility
+            && build_fire_utility >= toolmaking_utility
+            && build_fire_utility >= violence_utility
+            && build_fire_utility >= stockpile_utility
+        {
+            ("Build Fire".to_string(), pos)
+        } else if toolmaking_utility >= hunger_utility
+            && toolmaking_utility >= safety_utility
+            && toolmaking_utility >= social_utility
+            && toolmaking_utility >= curiosity_utility
+            && toolmaking_utility >= build_utility
+            && toolmaking_utility >= rest_utility
+            && toolmaking_utility >= repair_utility
+            && toolmaking_utility >= gather_wood_utility
+            && toolmaking_utility >= violence_utility
+            && toolmaking_utility >= stockpile_utility
+        {
+            ("Make Tools".to_string(), pos)
+        } else if violence_utility >= hunger_utility
+            && violence_utility >= safety_utility
+            && violence_utility >= social_utility
+            && violence_utility >= curiosity_utility
+            && violence_utility >= build_utility
+            && violence_utility >= rest_utility
+            && violence_utility >= repair_utility
+            && violence_utility >= gather_wood_utility
+            && violence_utility >= toolmaking_utility
+            && violence_utility >= stockpile_utility
+        {
+            let target = predator_positions
+                .iter()
+                .min_by(|(_, a), (_, b)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, predator_pos)| *predator_pos)
+                .unwrap_or(pos);
+            ("Hunt Predator".to_string(), target)
         } else if hunger_utility >= social_utility
             && hunger_utility >= safety_utility
             && hunger_utility >= build_utility
@@ -421,6 +578,8 @@ fn evaluate_npc_intents(
             && hunger_utility >= rest_utility
             && hunger_utility >= repair_utility
             && hunger_utility >= gather_wood_utility
+            && hunger_utility >= toolmaking_utility
+            && hunger_utility >= violence_utility
             && hunger_utility >= stockpile_utility
         {
             let remembered = memory
@@ -434,15 +593,20 @@ fn evaluate_npc_intents(
             && build_utility >= rest_utility
             && build_utility >= repair_utility
             && build_utility >= gather_wood_utility
+            && build_utility >= toolmaking_utility
+            && build_utility >= violence_utility
             && build_utility >= stockpile_utility
         {
             ("Build Shelter".to_string(), pos)
-        } else if safety_utility >= social_utility && safety_utility >= curiosity_utility {
+        } else if safety_utility >= social_utility
+            && safety_utility >= curiosity_utility
+            && safety_utility >= violence_utility
+        {
             let remembered_safe = memory
                 .last_safe_position
                 .unwrap_or_else(|| tile_center(&settings, safest_for_faction));
             ("Retreat".to_string(), remembered_safe)
-        } else if social_utility >= curiosity_utility {
+        } else if social_utility >= curiosity_utility && social_utility >= violence_utility {
             (
                 "Socialize".to_string(),
                 nearest_other.unwrap_or_else(|| tile_center(&settings, safest_for_faction)),
@@ -467,7 +631,7 @@ fn evaluate_npc_intents(
 
 fn avoid_predators(
     clock: Res<SimulationClock>,
-    mut npcs: Query<(&Transform, &mut Needs, &mut NpcIntent), With<Npc>>,
+    mut npcs: Query<(&Npc, &Transform, &mut Needs, &mut NpcIntent), With<Npc>>,
     predators: Query<&Transform, With<Predator>>,
 ) {
     let delta_seconds = clock.delta_seconds();
@@ -484,7 +648,7 @@ fn avoid_predators(
     let threat_radius = 160.0;
     let flee_radius = 120.0;
 
-    for (transform, mut needs, mut intent) in &mut npcs {
+    for (npc, transform, mut needs, mut intent) in &mut npcs {
         let pos = transform.translation.truncate();
         let mut nearest: Option<(Vec2, f32)> = None;
 
@@ -507,7 +671,9 @@ fn avoid_predators(
             away = away.normalize();
         }
 
-        if distance <= flee_radius {
+        if distance <= flee_radius
+            && !(intent.label == "Hunt Predator" && npc.aggression_drive > 0.7)
+        {
             if intent.label != "Flee" {
                 intent.label.clear();
                 intent.label.push_str("Flee");
@@ -552,6 +718,15 @@ fn apply_npc_intents(
                 needs.safety = (needs.safety + delta_seconds * 0.008).min(1.0);
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.018).min(1.0);
             }
+            "Build Fire" | "Tend Fire" => {
+                needs.safety = (needs.safety + delta_seconds * 0.02).min(1.0);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.012).min(1.0);
+            }
+            "Make Tools" => {
+                needs.curiosity = (needs.curiosity - delta_seconds * 0.015).max(0.05);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.012).min(1.0);
+                needs.safety = (needs.safety + delta_seconds * 0.01).min(1.0);
+            }
             "Stockpile" => {
                 needs.safety = (needs.safety + delta_seconds * 0.02).min(1.0);
             }
@@ -580,6 +755,10 @@ fn apply_npc_intents(
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.03).min(1.0);
                 needs.safety = (needs.safety + delta_seconds * 0.01).min(1.0);
             }
+            "Hunt Predator" => {
+                needs.safety = (needs.safety - delta_seconds * 0.02).max(0.0);
+                needs.fatigue = (needs.fatigue + delta_seconds * 0.024).min(1.0);
+            }
             "Explore" => {
                 needs.curiosity = (needs.curiosity - delta_seconds * 0.03).max(0.1);
                 needs.fatigue = (needs.fatigue + delta_seconds * 0.015).min(1.0);
@@ -594,7 +773,17 @@ fn harvest_npc_resources(
     clock: Res<SimulationClock>,
     settings: Res<MapSettings>,
     mut writer: MessageWriter<LogEvent>,
-    mut npcs: Query<(&Transform, &NpcIntent, &Needs, &mut Inventory, &mut Memory), With<Npc>>,
+    mut npcs: Query<
+        (
+            &Transform,
+            &NpcIntent,
+            &Needs,
+            &mut Inventory,
+            &mut Memory,
+            &mut Npc,
+        ),
+        With<Npc>,
+    >,
     mut regions: Query<(&RegionTile, &mut RegionState)>,
     mut trees: Query<(Entity, &Transform, &mut Tree)>,
 ) {
@@ -603,7 +792,7 @@ fn harvest_npc_resources(
         return;
     }
 
-    for (transform, intent, needs, mut inventory, mut memory) in &mut npcs {
+    for (transform, intent, needs, mut inventory, mut memory, mut npc) in &mut npcs {
         let coord = settings.tile_coord_for_position(transform.translation.truncate());
 
         match intent.label.as_str() {
@@ -651,11 +840,16 @@ fn harvest_npc_resources(
                         continue;
                     }
 
-                    let harvest = (0.45 + (1.0 - needs.safety) * 0.7) * delta_days;
+                    let tool_bonus = npc.woodcutting_tools * 0.95;
+                    let harvest = (0.16
+                        + (1.0 - needs.safety) * 0.28
+                        + npc.discovery_drive * 0.08
+                        + tool_bonus)
+                        * delta_days;
                     let tree_yield = match tree.stage {
-                        TreeStage::Sapling => 0.16,
-                        TreeStage::Young => 0.32,
-                        TreeStage::Mature => 0.52,
+                        TreeStage::Sapling => 0.06,
+                        TreeStage::Young => 0.18,
+                        TreeStage::Mature => 0.32,
                     };
                     let taken = harvest.min(inventory.wood_space()).min(tree_yield).max(0.0);
 
@@ -667,8 +861,8 @@ fn harvest_npc_resources(
                     inventory.wood += taken;
                     chopped_any_tree = true;
                     chopped_amount = taken;
-                    tree.chop_progress += taken * 2.8;
-                    tree.growth = (tree.growth - taken * 1.35).max(0.0);
+                    tree.chop_progress += taken * (0.8 + tool_bonus * 1.8);
+                    tree.growth = (tree.growth - taken * (0.55 + tool_bonus * 0.65)).max(0.0);
                     tree.stage = if tree.growth >= 0.9 {
                         TreeStage::Mature
                     } else if tree.growth >= 0.45 {
@@ -679,6 +873,10 @@ fn harvest_npc_resources(
 
                     if tree.chop_progress >= 1.0 || tree.growth <= 0.05 {
                         felled_tree = Some(tree_entity);
+                    }
+                    if npc.woodcutting_tools > 0.0 {
+                        npc.woodcutting_tools =
+                            (npc.woodcutting_tools - delta_days * 0.002 - taken * 0.08).max(0.0);
                     }
                     break;
                 }
@@ -704,6 +902,91 @@ fn harvest_npc_resources(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn develop_and_craft_tools(
+    clock: Res<SimulationClock>,
+    mut writer: MessageWriter<LogEvent>,
+    mut npcs: Query<(&mut Npc, &NpcIntent, &mut Needs), With<Npc>>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (mut npc, intent, needs) in &mut npcs {
+        if intent.label != "Make Tools" {
+            continue;
+        }
+
+        if npc.tool_knowledge < 1.0 {
+            let before = npc.tool_knowledge;
+            npc.tool_knowledge = (npc.tool_knowledge
+                + delta_days * (0.004 + npc.discovery_drive * 0.005 + needs.curiosity * 0.003))
+                .clamp(0.0, 1.0);
+            if before < 1.0 && npc.tool_knowledge >= 1.0 {
+                writer.write(LogEvent::new(
+                    LogEventKind::Discovery,
+                    format!("{} discovered how to make primitive tools", npc.name),
+                ));
+            }
+        } else {
+            let before = npc.woodcutting_tools;
+            npc.woodcutting_tools = (npc.woodcutting_tools
+                + delta_days
+                    * (0.005 + npc.discovery_drive * 0.004)
+                    * (1.08 - needs.fatigue * 0.30))
+                .clamp(0.0, 1.0);
+            if before < 0.35 && npc.woodcutting_tools >= 0.35 {
+                writer.write(LogEvent::new(
+                    LogEventKind::Construction,
+                    format!("{} crafted an improved hand tool", npc.name),
+                ));
+            }
+        }
+    }
+}
+
+fn resolve_npc_violence(
+    clock: Res<SimulationClock>,
+    mut writer: MessageWriter<LogEvent>,
+    mut npcs: Query<(&mut Npc, &Transform, &NpcIntent, &mut Needs), With<Npc>>,
+    mut predators: Query<(Entity, &Transform, &mut Predator)>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (mut npc, transform, intent, mut needs) in &mut npcs {
+        if intent.label != "Hunt Predator" {
+            continue;
+        }
+
+        let pos = transform.translation.truncate();
+        for (_, predator_transform, mut predator) in &mut predators {
+            let distance = pos.distance(predator_transform.translation.truncate());
+            if distance > 28.0 {
+                continue;
+            }
+
+            let attack_power =
+                (0.6 + npc.aggression_drive * 1.2 + npc.woodcutting_tools * 0.8) * delta_days;
+            let retaliation = (0.35 + predator.hunger * 0.6 + predator.speed * 0.015) * delta_days;
+            predator.health = (predator.health - attack_power).max(0.0);
+            npc.health = (npc.health - retaliation * (1.0 - npc.risk_tolerance * 0.18)).max(0.0);
+            needs.safety = (needs.safety - retaliation * 0.12).max(0.0);
+            needs.fatigue = (needs.fatigue + retaliation * 0.08).min(1.0);
+
+            if predator.health <= 0.0 {
+                writer.write(LogEvent::new(
+                    LogEventKind::Threat,
+                    format!("{} killed a predator", npc.name),
+                ));
+            }
+            break;
         }
     }
 }
@@ -881,6 +1164,7 @@ fn apply_shelter_comfort(
     clock: Res<SimulationClock>,
     mut npcs: Query<(&Transform, &NpcHome, Option<&FactionMember>, &mut Needs)>,
     shelters: Query<(Entity, &Shelter, &Transform, Option<&FactionMember>)>,
+    campfires: Query<(&Campfire, &Transform, Option<&FactionMember>)>,
 ) {
     let delta_seconds = clock.delta_seconds();
     if delta_seconds <= 0.0 {
@@ -948,14 +1232,34 @@ fn apply_shelter_comfort(
 
         needs.safety = (needs.safety + gain).min(1.0);
         needs.fatigue = (needs.fatigue - gain * 0.4).max(0.0);
+
+        for (campfire, fire_transform, fire_member) in &campfires {
+            if fire_member.map(|member| member.faction) != faction
+                && fire_member.is_some()
+                && faction.is_some()
+            {
+                continue;
+            }
+            let fire_distance = pos.distance(fire_transform.translation.truncate());
+            if fire_distance > 42.0 || campfire.ember <= 0.02 {
+                continue;
+            }
+
+            let fire_falloff = (1.0 - fire_distance / 42.0).clamp(0.0, 1.0);
+            let fire_gain = campfire.heat * campfire.ember * fire_falloff * delta_seconds * 0.7;
+            needs.safety = (needs.safety + fire_gain).min(1.0);
+            needs.fatigue = (needs.fatigue - fire_gain * 0.6).max(0.0);
+        }
     }
 }
 
 fn apply_climate_stress(
     clock: Res<SimulationClock>,
+    climate: Res<ClimateModel>,
     settings: Res<MapSettings>,
     regions: Query<(&RegionTile, &RegionClimate)>,
     shelters: Query<(&Shelter, &Transform)>,
+    campfires: Query<(&Campfire, &Transform)>,
     mut npcs: Query<(&mut Npc, &Transform, &mut Needs)>,
 ) {
     let delta_days = clock.delta_days();
@@ -963,9 +1267,9 @@ fn apply_climate_stress(
         return;
     }
 
-    let pressure_by_coord: std::collections::HashMap<IVec2, f32> = regions
+    let climate_by_coord: std::collections::HashMap<IVec2, (f32, f32)> = regions
         .iter()
-        .map(|(tile, climate)| (tile.coord, climate.pressure))
+        .map(|(tile, climate)| (tile.coord, (climate.pressure, tile.temperature)))
         .collect();
 
     let shelter_radius = 48.0;
@@ -973,13 +1277,16 @@ fn apply_climate_stress(
     for (mut npc, transform, mut needs) in &mut npcs {
         let pos = transform.translation.truncate();
         let coord = settings.tile_coord_for_position(pos);
-        let pressure = pressure_by_coord
+        let (pressure, temperature) = climate_by_coord
             .get(&coord)
             .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
+            .unwrap_or((0.0, climate.comfort_temp));
+        let pressure = pressure.clamp(0.0, 1.0);
+        let cold_stress =
+            ((climate.comfort_temp - temperature) / climate.comfort_band.max(0.01)).clamp(0.0, 1.3);
 
         let mut shelter_protection = 0.0f32;
+        let mut fire_warmth = 0.0f32;
         for (shelter, shelter_transform) in &shelters {
             let d = pos.distance(shelter_transform.translation.truncate());
             if d > shelter_radius {
@@ -990,19 +1297,51 @@ fn apply_climate_stress(
             let protection = shelter.insulation * integrity * falloff;
             shelter_protection = shelter_protection.max(protection);
         }
-
-        let effective_pressure = (pressure - shelter_protection).clamp(0.0, 1.0);
-        if effective_pressure <= 0.01 {
-            continue;
+        for (campfire, fire_transform) in &campfires {
+            let d = pos.distance(fire_transform.translation.truncate());
+            if d > 52.0 || campfire.ember <= 0.02 {
+                continue;
+            }
+            let falloff = (1.0 - d / 52.0).clamp(0.0, 1.0);
+            fire_warmth = fire_warmth.max(campfire.heat * campfire.ember * falloff);
         }
 
-        needs.thirst = (needs.thirst + effective_pressure * delta_days * 0.05).min(1.0);
-        needs.hunger = (needs.hunger + effective_pressure * delta_days * 0.03).min(1.0);
-        needs.fatigue = (needs.fatigue + effective_pressure * delta_days * 0.02).min(1.0);
-        needs.safety = (needs.safety - effective_pressure * delta_days * 0.02).clamp(0.0, 1.0);
+        let effective_pressure = (pressure - shelter_protection * 0.65).clamp(0.0, 1.0);
+        let effective_cold = (cold_stress
+            - shelter_protection * 1.25
+            - fire_warmth * 1.6
+            - climate.solar_factor() * 0.45
+            + climate.lunar_factor() * 0.08)
+            .clamp(0.0, 1.25);
 
-        if effective_pressure > 0.9 && shelter_protection < 0.10 {
-            let damage = (effective_pressure - 0.9) * delta_days * 25.0;
+        if effective_pressure > 0.01 {
+            needs.thirst = (needs.thirst + effective_pressure * delta_days * 0.04).min(1.0);
+            needs.hunger = (needs.hunger + effective_pressure * delta_days * 0.03).min(1.0);
+            needs.fatigue = (needs.fatigue + effective_pressure * delta_days * 0.02).min(1.0);
+            needs.safety = (needs.safety - effective_pressure * delta_days * 0.02).clamp(0.0, 1.0);
+        }
+
+        if effective_cold > 0.01 {
+            npc.exposure = (npc.exposure + effective_cold * delta_days * 0.022).clamp(0.0, 2.0);
+            needs.hunger = (needs.hunger + effective_cold * delta_days * 0.022).min(1.0);
+            needs.fatigue = (needs.fatigue + effective_cold * delta_days * 0.018).min(1.0);
+            needs.safety = (needs.safety - effective_cold * delta_days * 0.035).clamp(0.0, 1.0);
+        } else {
+            npc.exposure = (npc.exposure
+                - delta_days
+                    * (0.12
+                        + shelter_protection * 0.10
+                        + fire_warmth * 0.22
+                        + climate.solar_factor() * 0.10))
+            .max(0.0);
+        }
+
+        if (effective_pressure > 0.9 && shelter_protection < 0.10 && fire_warmth < 0.08)
+            || npc.exposure > 1.30
+        {
+            let damage = (effective_pressure - 0.9).max(0.0) * delta_days * 4.0
+                + (npc.exposure - 1.30).max(0.0) * delta_days * 6.0
+                + effective_cold * delta_days * 0.45;
             npc.health = (npc.health - damage).max(0.0);
         }
     }
@@ -1085,6 +1424,97 @@ fn repair_npc_shelters(
     }
 }
 
+fn tend_npc_campfires(
+    clock: Res<SimulationClock>,
+    mut npcs: Query<(&Transform, &NpcIntent, &mut Inventory), With<Npc>>,
+    mut campfires: Query<(&mut Campfire, &Transform), With<Campfire>>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for (npc_transform, intent, mut inventory) in &mut npcs {
+        if intent.label != "Tend Fire" || inventory.wood <= 0.0 {
+            continue;
+        }
+
+        let pos = npc_transform.translation.truncate();
+        for (mut campfire, fire_transform) in &mut campfires {
+            let distance = pos.distance(fire_transform.translation.truncate());
+            if distance > 26.0 {
+                continue;
+            }
+
+            let added = (0.35 * delta_days)
+                .min(inventory.wood)
+                .min((campfire.max_fuel - campfire.fuel).max(0.0));
+            if added > 0.0 {
+                inventory.wood -= added;
+                campfire.fuel += added;
+                campfire.ember = (campfire.ember + added * 0.9).clamp(0.0, 1.0);
+                campfire.heat = 0.22 + campfire.ember * 0.72;
+            }
+            break;
+        }
+    }
+}
+
+fn build_npc_campfires(
+    mut commands: Commands,
+    mut npcs: Query<
+        (
+            &Transform,
+            &NpcIntent,
+            &mut Needs,
+            &mut Inventory,
+            Option<&FactionMember>,
+        ),
+        With<Npc>,
+    >,
+    campfires: Query<&Transform, With<Campfire>>,
+) {
+    for (transform, intent, mut needs, mut inventory, member) in &mut npcs {
+        if intent.label != "Build Fire" {
+            continue;
+        }
+
+        let pos = transform.translation.truncate();
+        if campfires
+            .iter()
+            .any(|fire_transform| fire_transform.translation.truncate().distance(pos) < 34.0)
+        {
+            needs.safety = (needs.safety + 0.03).min(1.0);
+            continue;
+        }
+
+        let fire_cost = 0.35;
+        if inventory.wood < fire_cost {
+            continue;
+        }
+
+        inventory.wood -= fire_cost;
+        let fire_entity = commands
+            .spawn((
+                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
+                Transform::from_xyz(pos.x + 6.0, pos.y - 2.0, 1.7),
+                Campfire {
+                    fuel: 0.8,
+                    max_fuel: 2.5,
+                    heat: 0.8,
+                    ember: 1.0,
+                },
+            ))
+            .id();
+        if let Some(member) = member {
+            commands.entity(fire_entity).insert(*member);
+        }
+
+        needs.safety = (needs.safety + 0.10).min(1.0);
+        needs.fatigue = (needs.fatigue - 0.03).max(0.0);
+    }
+}
+
 fn build_npc_shelters(
     mut commands: Commands,
     mut writer: MessageWriter<LogEvent>,
@@ -1117,7 +1547,7 @@ fn build_npc_shelters(
             continue;
         }
 
-        let build_cost = 1.1;
+        let build_cost = 0.9;
         if inventory.wood < build_cost {
             needs.safety = (needs.safety + 0.01).min(1.0);
             continue;

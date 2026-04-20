@@ -32,6 +32,14 @@ pub struct Shelter {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
+pub struct Campfire {
+    pub fuel: f32,
+    pub max_fuel: f32,
+    pub heat: f32,
+    pub ember: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
 pub struct ShelterStockpile {
     pub food: f32,
     pub wood: f32,
@@ -65,6 +73,12 @@ struct ShelterBase;
 #[derive(Component)]
 struct ShelterRoof;
 
+#[derive(Component)]
+struct CampfireCore;
+
+#[derive(Component)]
+struct CampfireGlow;
+
 #[derive(Resource, Default)]
 pub struct WorldStats {
     pub trees: usize,
@@ -72,6 +86,7 @@ pub struct WorldStats {
     pub predators: usize,
     pub npcs: usize,
     pub shelters: usize,
+    pub campfires: usize,
     pub avg_mana_density: f32,
     pub avg_animal_capacity: f32,
     pub avg_tree_capacity: f32,
@@ -98,6 +113,9 @@ impl Plugin for WorldResourcesPlugin {
                 sync_tree_visuals,
                 attach_shelter_visuals,
                 sync_shelter_visuals,
+                attach_campfire_visuals,
+                sync_campfire_visuals,
+                burn_campfires,
                 decay_shelter_integrity,
                 regrow_region_resources,
                 update_world_stats,
@@ -149,6 +167,23 @@ fn attach_tree_visuals(mut commands: Commands, trees: Query<Entity, Added<Tree>>
                 Sprite::from_color(Color::srgb(0.26, 0.68, 0.30), Vec2::new(12.0, 10.0)),
                 Transform::from_xyz(5.0, 7.0, 0.3),
                 TreeCanopyAccent,
+            ));
+        });
+    }
+}
+
+fn attach_campfire_visuals(mut commands: Commands, campfires: Query<Entity, Added<Campfire>>) {
+    for entity in &campfires {
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                Sprite::from_color(Color::srgb(0.38, 0.20, 0.08), Vec2::new(10.0, 4.0)),
+                Transform::from_xyz(0.0, -4.0, 0.1),
+                CampfireCore,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.96, 0.58, 0.14, 0.65), Vec2::new(12.0, 14.0)),
+                Transform::from_xyz(0.0, 3.0, 0.2),
+                CampfireGlow,
             ));
         });
     }
@@ -256,6 +291,49 @@ fn sync_shelter_visuals(
     }
 }
 
+fn sync_campfire_visuals(
+    campfires: Query<(&Campfire, &Children), Or<(Changed<Campfire>, Added<Campfire>)>>,
+    mut cores: Query<&mut Sprite, With<CampfireCore>>,
+    mut glows: Query<&mut Sprite, (With<CampfireGlow>, Without<CampfireCore>)>,
+) {
+    for (campfire, children) in &campfires {
+        let fuel_ratio = (campfire.fuel / campfire.max_fuel.max(0.1)).clamp(0.0, 1.0);
+        let ember = campfire.ember.clamp(0.0, 1.0);
+        for child in children.iter() {
+            if let Ok(mut sprite) = cores.get_mut(child) {
+                sprite.color = Color::srgb(0.28 + ember * 0.20, 0.14 + ember * 0.10, 0.06);
+            }
+            if let Ok(mut sprite) = glows.get_mut(child) {
+                sprite.color = Color::srgba(
+                    0.85 + ember * 0.12,
+                    0.30 + ember * 0.35,
+                    0.10 + fuel_ratio * 0.08,
+                    0.10 + ember * 0.60,
+                );
+                sprite.custom_size = Some(Vec2::new(8.0 + ember * 10.0, 8.0 + ember * 14.0));
+            }
+        }
+    }
+}
+
+fn burn_campfires(clock: Res<SimulationClock>, mut campfires: Query<&mut Campfire>) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    for mut campfire in &mut campfires {
+        campfire.fuel = (campfire.fuel - delta_days * 0.09).max(0.0);
+        let fuel_ratio = (campfire.fuel / campfire.max_fuel.max(0.1)).clamp(0.0, 1.0);
+        campfire.ember = if campfire.fuel > 0.0 {
+            (campfire.ember + delta_days * 0.35).clamp(0.45, 1.0) * fuel_ratio.max(0.45)
+        } else {
+            (campfire.ember - delta_days * 0.25).max(0.0)
+        };
+        campfire.heat = 0.22 + campfire.ember * 0.72;
+    }
+}
+
 fn decay_shelter_integrity(
     clock: Res<SimulationClock>,
     settings: Res<MapSettings>,
@@ -308,6 +386,7 @@ fn update_world_stats(
     predators: Query<&Predator>,
     npcs: Query<&crate::agents::npc::Npc>,
     shelters: Query<&Shelter>,
+    campfires: Query<&Campfire>,
     shelter_stockpiles: Query<&ShelterStockpile>,
     inventories: Query<&Inventory>,
     regions: Query<(&RegionTile, &RegionState, &RegionClimate)>,
@@ -342,6 +421,7 @@ fn update_world_stats(
     stats.predators = predators.iter().count();
     stats.npcs = npcs.iter().count();
     stats.shelters = shelters.iter().count();
+    stats.campfires = campfires.iter().count();
     let divisor = tile_count.max(1) as f32;
     stats.avg_mana_density = mana_total / divisor;
     stats.avg_animal_capacity = animal_capacity_total / divisor;
