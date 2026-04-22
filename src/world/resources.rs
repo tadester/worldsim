@@ -6,6 +6,7 @@ use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::SimulationClock;
 use crate::world::climate::RegionClimate;
+use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -99,6 +100,8 @@ pub struct WorldStats {
     pub total_wood_carried: f32,
     pub total_food_stockpiled: f32,
     pub total_wood_stockpiled: f32,
+    pub avg_npc_exposure: f32,
+    pub cold_stressed_npcs: usize,
 }
 
 pub struct WorldResourcesPlugin;
@@ -360,17 +363,24 @@ fn decay_shelter_integrity(
 
 fn regrow_region_resources(
     clock: Res<SimulationClock>,
+    world_mind: Option<Res<WorldMind>>,
     mut regions: Query<(&RegionTile, &RegionClimate, &mut RegionState)>,
 ) {
     let delta_days = clock.delta_days();
+    let resource_bias = world_mind
+        .as_ref()
+        .map(|mind| mind.resource_bias)
+        .unwrap_or(1.0);
 
     for (tile, climate, mut state) in &mut regions {
         let suitability = (1.0 - climate.pressure * 0.75).clamp(0.15, 1.0);
         let forage_growth = (0.16 + tile.soil_fertility * 0.20 + tile.temperature * 0.04)
             * suitability
+            * resource_bias
             * delta_days;
         let biomass_growth = (0.08 + tile.soil_fertility * 0.12 + tile.mana_density * 0.04)
             * (0.55 + suitability * 0.45)
+            * (0.88 + resource_bias * 0.12)
             * delta_days;
 
         state.forage = (state.forage + forage_growth).clamp(0.0, state.forage_capacity);
@@ -435,4 +445,7 @@ fn update_world_stats(
     stats.total_wood_carried = inventories.iter().map(|inv| inv.wood).sum();
     stats.total_food_stockpiled = shelter_stockpiles.iter().map(|pile| pile.food).sum();
     stats.total_wood_stockpiled = shelter_stockpiles.iter().map(|pile| pile.wood).sum();
+    let npc_count = stats.npcs.max(1) as f32;
+    stats.avg_npc_exposure = npcs.iter().map(|npc| npc.exposure).sum::<f32>() / npc_count;
+    stats.cold_stressed_npcs = npcs.iter().filter(|npc| npc.exposure > 0.45).count();
 }

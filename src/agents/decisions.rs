@@ -8,6 +8,7 @@ use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
+use crate::agents::programs::{KnownPrograms, ProgramId};
 use crate::agents::relationships::Relationships;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
@@ -20,6 +21,8 @@ use crate::world::territory::Territory;
 pub struct NpcIntent {
     pub label: String,
     pub heading: Vec2,
+    pub target: Option<Vec2>,
+    pub blocked_reason: String,
 }
 
 impl Default for NpcIntent {
@@ -27,6 +30,8 @@ impl Default for NpcIntent {
         Self {
             label: "Idle".to_string(),
             heading: Vec2::ZERO,
+            target: None,
+            blocked_reason: "No decision evaluated yet".to_string(),
         }
     }
 }
@@ -88,6 +93,7 @@ fn evaluate_npc_intents(
         &NpcHome,
         &Inventory,
         Option<&FactionMember>,
+        Option<&KnownPrograms>,
     )>,
 ) {
     let mut region_index: HashMap<IVec2, (RegionTile, RegionState, f32, f32, Option<Entity>)> =
@@ -206,6 +212,7 @@ fn evaluate_npc_intents(
         home,
         inventory,
         member,
+        programs,
     ) in &mut npcs
     {
         let pos = transform.translation.truncate();
@@ -307,7 +314,9 @@ fn evaluate_npc_intents(
         let nearest_fire = campfires
             .iter()
             .filter(|(_, _, _, member)| {
-                member.map(|member| member.faction) == faction || member.is_none() || faction.is_none()
+                member.map(|member| member.faction) == faction
+                    || member.is_none()
+                    || faction.is_none()
             })
             .min_by(|(_, _, a, _), (_, _, b, _)| {
                 pos.distance(a.translation.truncate())
@@ -322,11 +331,21 @@ fn evaluate_npc_intents(
             .unwrap_or(false);
         let carrying_ratio = inventory.carry_ratio();
         let has_usable_tools = npc.woodcutting_tools > 0.18;
+        let knows_firemaking = programs
+            .map(|programs| programs.knows(ProgramId::Firemaking))
+            .unwrap_or(false);
+        let knows_shelter_building = programs
+            .map(|programs| programs.knows(ProgramId::ShelterBuilding))
+            .unwrap_or(false);
+        let knows_shelter_repair = programs
+            .map(|programs| programs.knows(ProgramId::ShelterRepair))
+            .unwrap_or(false);
         let build_utility = if needs.safety < 0.78
             && local_biomass > 0.5
             && !shelter_nearby
             && home.shelter.is_none()
             && inventory.wood >= 0.9
+            && knows_shelter_building
         {
             ((0.9 - needs.safety)
                 + local_biomass * 0.18
@@ -337,7 +356,7 @@ fn evaluate_npc_intents(
         } else {
             0.0
         };
-        let build_fire_utility = if inventory.wood >= 0.35 && !fire_nearby {
+        let build_fire_utility = if inventory.wood >= 0.35 && !fire_nearby && knows_firemaking {
             cold_risk * 1.6 + npc.exposure * 1.4 + (1.0 - needs.safety) * 0.35
         } else {
             0.0
@@ -367,6 +386,7 @@ fn evaluate_npc_intents(
         let repair_utility = if home_position.is_some()
             && home_integrity < 0.85
             && (home_stockpiled_wood + inventory.wood) > 0.15
+            && knows_shelter_repair
         {
             (1.0 - home_integrity) * 1.1 + (1.0 - needs.safety) * 0.25
         } else {
@@ -623,9 +643,141 @@ fn evaluate_npc_intents(
             heading = heading.normalize();
         }
 
+        let blocked_reason = npc_blocked_reason(
+            label.as_str(),
+            needs,
+            relationships,
+            inventory,
+            home,
+            home_position,
+            home_integrity,
+            home_stockpiled_wood,
+            rest_position,
+            local_biomass,
+            best_biomass,
+            current_forage,
+            best_forage,
+            shelter_nearby,
+            fire_nearby,
+            nearest_fire.is_some(),
+            nearest_other.is_some(),
+            nearest_same_faction.is_some(),
+            predator_positions.is_empty(),
+            cold_risk,
+            npc,
+            knows_firemaking,
+            knows_shelter_building,
+            knows_shelter_repair,
+        );
+
         intent.label = label.clone();
         intent.heading = heading;
+        intent.target = Some(target);
+        intent.blocked_reason = blocked_reason;
         memory.last_decision = label;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn npc_blocked_reason(
+    selected_label: &str,
+    needs: &Needs,
+    relationships: &Relationships,
+    inventory: &Inventory,
+    home: &NpcHome,
+    home_position: Option<Vec2>,
+    home_integrity: f32,
+    home_stockpiled_wood: f32,
+    rest_position: Option<Vec2>,
+    local_biomass: f32,
+    best_biomass: f32,
+    current_forage: f32,
+    best_forage: f32,
+    shelter_nearby: bool,
+    fire_nearby: bool,
+    has_nearest_fire: bool,
+    has_nearest_other: bool,
+    has_same_faction_nearby: bool,
+    no_predators: bool,
+    cold_risk: f32,
+    npc: &Npc,
+    knows_firemaking: bool,
+    knows_shelter_building: bool,
+    knows_shelter_repair: bool,
+) -> String {
+    let mut blockers = Vec::new();
+    let wants_food = needs.hunger > 0.58 || inventory.food_ratio() < 0.15;
+    let wants_rest = needs.fatigue > 0.55 || npc.exposure > 0.35;
+    let wants_safety = needs.safety < 0.78 || cold_risk > 0.18 || npc.exposure > 0.25;
+    let wants_social = (1.0 - needs.social) * relationships.social_drive > 0.35;
+    let wants_repair = home_position.is_some() && home_integrity < 0.85;
+    let wants_wood = wants_repair
+        || (home.shelter.is_none()
+            && (needs.safety < 0.82 || home_stockpiled_wood + inventory.wood < 1.2));
+
+    if wants_food && current_forage <= 0.05 && best_forage <= 0.05 {
+        blockers.push("Forage blocked: no known forage");
+    }
+    if wants_food && inventory.food_space() <= 0.0 {
+        blockers.push("Forage blocked: food carry is full");
+    }
+    if wants_rest && rest_position.is_none() {
+        blockers.push("Rest blocked: no home or allied shelter");
+    }
+    if wants_repair && home_stockpiled_wood + inventory.wood <= 0.15 {
+        blockers.push("Repair blocked: no stored or carried wood");
+    }
+    if wants_repair && !knows_shelter_repair {
+        blockers.push("Repair blocked: Shelter Repair program unknown");
+    }
+    if wants_wood && local_biomass <= 0.25 && best_biomass <= 0.35 {
+        blockers.push("Gather wood blocked: no tree biomass found");
+    }
+    if wants_wood && inventory.wood_space() <= 0.0 {
+        blockers.push("Gather wood blocked: wood carry is full");
+    }
+    if wants_safety && home.shelter.is_none() && inventory.wood < 0.9 {
+        blockers.push("Build shelter blocked: needs 0.9 wood");
+    }
+    if wants_safety && home.shelter.is_none() && !knows_shelter_building {
+        blockers.push("Build shelter blocked: Shelter Building program unknown");
+    }
+    if wants_safety && home.shelter.is_none() && shelter_nearby {
+        blockers.push("Build shelter blocked: existing shelter nearby");
+    }
+    if wants_safety && home.shelter.is_none() && local_biomass <= 0.5 {
+        blockers.push("Build shelter blocked: local wood biomass too low");
+    }
+    if cold_risk > 0.18 && inventory.wood < 0.35 {
+        blockers.push("Build fire blocked: needs 0.35 wood");
+    }
+    if cold_risk > 0.18 && !knows_firemaking {
+        blockers.push("Build fire blocked: Firemaking program unknown");
+    }
+    if cold_risk > 0.18 && fire_nearby {
+        blockers.push("Build fire blocked: fire already nearby");
+    }
+    if has_nearest_fire && inventory.wood < 0.12 {
+        blockers.push("Tend fire blocked: needs carried wood");
+    }
+    if wants_social && !has_nearest_other {
+        blockers.push("Socialize blocked: no other NPC");
+    }
+    if wants_social && !has_same_faction_nearby {
+        blockers.push("Faction social blocked: no same-faction NPC nearby");
+    }
+    if npc.aggression_drive > 0.7 && no_predators {
+        blockers.push("Hunt blocked: no predator targets");
+    }
+
+    if blockers.is_empty() {
+        if selected_label == "Explore" {
+            "No hard blocker; Explore won the utility comparison".to_string()
+        } else {
+            "None".to_string()
+        }
+    } else {
+        blockers.join(" | ")
     }
 }
 
@@ -1333,7 +1485,7 @@ fn apply_climate_stress(
                         + shelter_protection * 0.10
                         + fire_warmth * 0.22
                         + climate.solar_factor() * 0.10))
-            .max(0.0);
+                .max(0.0);
         }
 
         if (effective_pressure > 0.9 && shelter_protection < 0.10 && fire_warmth < 0.08)
@@ -1585,6 +1737,8 @@ fn build_npc_shelters(
         commands.entity(entity).insert(NpcIntent {
             label: "Rest".to_string(),
             heading: Vec2::ZERO,
+            target: Some(pos),
+            blocked_reason: "None".to_string(),
         });
     }
 }

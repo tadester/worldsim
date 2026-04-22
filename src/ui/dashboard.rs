@@ -1,11 +1,13 @@
 use bevy::prelude::*;
 
 use crate::agents::factions::Faction;
+use crate::agents::programs::WorldProgramState;
 use crate::life::population::PopulationStats;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::{ClimateEventState, ClimateModel};
+use crate::world::director::WorldMind;
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
 
@@ -69,6 +71,8 @@ fn update_dashboard_text(
     population: Res<PopulationStats>,
     log: Res<EventLog>,
     trends: Res<TrendHistory>,
+    world_mind: Res<WorldMind>,
+    programs: Res<WorldProgramState>,
     factions: Query<(Entity, &Faction)>,
     territories: Query<&Territory>,
     mut text_query: Query<&mut Text, With<DashboardText>>,
@@ -205,6 +209,21 @@ fn update_dashboard_text(
                 &trend_line
             },
             latest
+        ));
+        text.0.push_str(&format!(
+            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nWorld programs: {} unlocked | last: {}",
+            world_mind.stance,
+            world_mind.intent,
+            world_mind.pressure,
+            world_mind.nurture,
+            world_mind.entropy,
+            world_mind.focus_coord.x,
+            world_mind.focus_coord.y,
+            world_mind.thought,
+            stats.avg_npc_exposure,
+            stats.cold_stressed_npcs,
+            programs.unlocked.len(),
+            programs.last_reason
         ));
     }
 }

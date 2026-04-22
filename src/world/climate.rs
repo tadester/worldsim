@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::systems::simulation::SimulationStep;
+use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -246,6 +247,7 @@ fn update_region_climate(
     settings: Res<MapSettings>,
     mut climate: ResMut<ClimateModel>,
     events: Res<ClimateEventState>,
+    world_mind: Option<Res<WorldMind>>,
     mut regions: Query<(&mut RegionTile, &mut Sprite, &mut RegionClimate)>,
 ) {
     if climate.year_length_days <= 0.0 {
@@ -272,8 +274,14 @@ fn update_region_climate(
     let daylight_cycle = (day_phase * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2).sin();
     let sun_warmth = daylight_cycle.max(0.0) * climate.solar_warmth;
     let moon_cold = (-daylight_cycle).max(0.0) * climate.lunar_cold;
+    let world_bias = world_mind
+        .as_ref()
+        .map(|mind| mind.climate_bias)
+        .unwrap_or(0.0);
     let global_offset =
-        seasonal * climate.seasonal_amplitude + drift * climate.drift_amplitude + sun_warmth - moon_cold;
+        seasonal * climate.seasonal_amplitude + drift * climate.drift_amplitude + sun_warmth
+            - moon_cold
+            + world_bias;
     climate.current_offset = global_offset;
 
     let height = (settings.height.max(2) - 1) as f32;

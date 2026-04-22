@@ -1,14 +1,17 @@
 use bevy::prelude::*;
 
-use crate::agents::animal::Animal;
+use crate::agents::animal::{Animal, AnimalLifeStage, Pregnancy};
 use crate::agents::decisions::NpcIntent;
 use crate::agents::factions::{Faction, FactionMember};
 use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
+use crate::agents::mind::NpcMind;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::predator::Predator;
+use crate::agents::programs::KnownPrograms;
 use crate::life::growth::Lifecycle;
+use crate::life::reproduction::NpcPregnancy;
 use crate::magic::mana::ManaReservoir;
 use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::RegionClimate;
@@ -110,7 +113,7 @@ fn update_inspector(
         &Transform,
         Option<&FactionMember>,
     )>,
-    animals: Query<(&Animal, &Lifecycle, &Transform)>,
+    animals: Query<(&Animal, &Lifecycle, &Transform, Option<&Pregnancy>)>,
     predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
     regions: Query<(&RegionTile, &Territory)>,
@@ -126,6 +129,9 @@ fn update_inspector(
         &ManaReservoir,
         &Transform,
         Option<&FactionMember>,
+        Option<&NpcPregnancy>,
+        Option<&NpcMind>,
+        Option<&KnownPrograms>,
     )>,
     mut query: Query<&mut Text, With<InspectorText>>,
 ) {
@@ -163,13 +169,35 @@ fn update_inspector(
                 transform.translation.x,
                 transform.translation.y,
             )
-        } else if let Ok((animal, lifecycle, transform)) = animals.get(entity) {
+        } else if let Ok((animal, lifecycle, transform, pregnancy)) = animals.get(entity) {
+            let animal_action = animal_action_label(animal, pregnancy);
+            let animal_blocker = animal_blocked_reason(animal, lifecycle, pregnancy);
+            let pregnancy_line = pregnancy
+                .map(|pregnancy| {
+                    format!(
+                        "Pregnancy: yes ({:.1}d left)\nOffspring H/S: {:.1}/{:.1}",
+                        pregnancy.gestation_days,
+                        pregnancy.offspring_health,
+                        pregnancy.offspring_speed
+                    )
+                })
+                .unwrap_or_else(|| "Pregnancy: no".to_string());
             format!(
-                "Type: Animal\nAge: {:.1}\nHealth: {:.1}\nEnergy: {:.1}\nHunger: {:.2}\nPos: {:.0}, {:.0}",
+                "Type: Animal\nAction: {}\nTarget: wander heading {:.0}deg\nTop needs: {}\nBlocked: {}\nStage: {}\nAge: {:.1}d / mature {:.1}d\nHealth: {:.1}\nEnergy: {:.1}\nHunger: {:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction drive: {:.2}\n{}\nPos: {:.0}, {:.0}",
+                animal_action,
+                animal.wander_angle.to_degrees().rem_euclid(360.0),
+                top_animal_needs(animal),
+                animal_blocker,
+                animal_life_stage_label(animal.life_stage),
                 lifecycle.age_days,
+                lifecycle.maturity_age,
                 animal.health,
                 animal.energy,
                 animal.hunger,
+                lifecycle.reproduction_cooldown,
+                lifecycle.fertility,
+                animal.reproduction_drive,
+                pregnancy_line,
                 transform.translation.x,
                 transform.translation.y,
             )
@@ -193,6 +221,9 @@ fn update_inspector(
             mana,
             transform,
             member,
+            pregnancy,
+            mind,
+            programs,
         )) = npcs.get(entity)
         {
             let home_line = home
@@ -251,23 +282,63 @@ fn update_inspector(
                 })
                 .unwrap_or_else(|| "Climate: n/a".to_string());
 
+            let mind_line = mind
+                .map(|mind| {
+                    format!(
+                        "Mind: {} | goal: {}\nPlan: {}\nBelief: {}\nMind pressure/conf: {:.2}/{:.2}",
+                        mind.mood,
+                        mind.goal,
+                        mind.plan,
+                        mind.belief,
+                        mind.pressure,
+                        mind.confidence
+                    )
+                })
+                .unwrap_or_else(|| "Mind: not initialized".to_string());
+            let programs_line = programs
+                .map(|programs| {
+                    format!(
+                        "Programs: {} known | {}\nProgram note: {}\nWorld grants: {} | last: {}",
+                        programs.known.len(),
+                        programs.names(12),
+                        programs.featured_summary(),
+                        programs.granted_by_world.len(),
+                        programs.last_grant_reason
+                    )
+                })
+                .unwrap_or_else(|| "Programs: not initialized".to_string());
+
             format!(
-                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\nHealth: {:.1}\nIntent: {}\nNeeds H/S/C: {:.2}/{:.2}/{:.2}\nDrives R/D/A/Risk: {:.2}/{:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.sex.label(),
                 npc.gender.label(),
                 lifecycle.age_days / 365.0,
+                lifecycle.maturity_age / 365.0,
                 faction_line,
                 coord.x,
                 coord.y,
                 territory_line,
                 climate_line,
+                mind_line,
+                programs_line,
                 npc.health,
                 intent.label,
+                target_label(intent.target),
+                intent.heading.x,
+                intent.heading.y,
+                top_npc_needs(needs),
+                intent.blocked_reason,
                 needs.hunger,
+                needs.thirst,
+                needs.fatigue,
                 needs.safety,
+                needs.social,
                 needs.curiosity,
+                lifecycle.reproduction_cooldown,
+                lifecycle.fertility,
                 npc.reproduction_drive,
+                npc_reproduction_state(npc, lifecycle, needs, home, pregnancy),
                 npc.discovery_drive,
                 npc.aggression_drive,
                 npc.risk_tolerance,
@@ -301,5 +372,139 @@ fn tree_stage_label(stage: TreeStage) -> &'static str {
         TreeStage::Sapling => "Sapling",
         TreeStage::Young => "Young",
         TreeStage::Mature => "Mature",
+    }
+}
+
+fn animal_life_stage_label(stage: AnimalLifeStage) -> &'static str {
+    match stage {
+        AnimalLifeStage::Juvenile => "Juvenile",
+        AnimalLifeStage::Adult => "Adult",
+        AnimalLifeStage::Elder => "Elder",
+    }
+}
+
+fn animal_action_label(animal: &Animal, pregnancy: Option<&Pregnancy>) -> &'static str {
+    if pregnancy.is_some() {
+        "Gestating while foraging/wandering"
+    } else if animal.hunger > 0.35 {
+        "Forage"
+    } else if animal.energy < 12.0 {
+        "Tired wander"
+    } else {
+        "Wander"
+    }
+}
+
+fn animal_blocked_reason(
+    animal: &Animal,
+    lifecycle: &Lifecycle,
+    pregnancy: Option<&Pregnancy>,
+) -> String {
+    let mut blockers = Vec::new();
+    if animal.life_stage != AnimalLifeStage::Adult {
+        blockers.push("Reproduction blocked: not adult");
+    }
+    if lifecycle.age_days < lifecycle.maturity_age {
+        blockers.push("Reproduction blocked: below maturity age");
+    }
+    if lifecycle.reproduction_cooldown > 0.0 {
+        blockers.push("Reproduction blocked: cooldown active");
+    }
+    if animal.health < 30.0 {
+        blockers.push("Reproduction blocked: health below 30");
+    }
+    if animal.energy < 28.0 {
+        blockers.push("Reproduction blocked: energy below 28");
+    }
+    if pregnancy.is_some() {
+        blockers.push("Reproduction blocked: already pregnant");
+    }
+    if animal.energy <= 0.0 {
+        blockers.push("Movement blocked: no energy");
+    }
+
+    if blockers.is_empty() {
+        "None".to_string()
+    } else {
+        blockers.join(" | ")
+    }
+}
+
+fn top_animal_needs(animal: &Animal) -> String {
+    let energy_need = (1.0 - animal.energy / 60.0).clamp(0.0, 1.0);
+    let health_need = (1.0 - animal.health / 40.0).clamp(0.0, 1.0);
+    let mut scores = [
+        ("hunger", animal.hunger.clamp(0.0, 1.0)),
+        ("energy", energy_need),
+        ("health", health_need),
+        ("repro", animal.reproduction_drive.clamp(0.0, 1.0)),
+    ];
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    format!(
+        "{} {:.2}, {} {:.2}, {} {:.2}",
+        scores[0].0, scores[0].1, scores[1].0, scores[1].1, scores[2].0, scores[2].1
+    )
+}
+
+fn top_npc_needs(needs: &Needs) -> String {
+    let mut scores = [
+        ("hunger", needs.hunger),
+        ("thirst", needs.thirst),
+        ("fatigue", needs.fatigue),
+        ("unsafe", 1.0 - needs.safety),
+        ("social", 1.0 - needs.social),
+        ("curiosity", needs.curiosity),
+    ];
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    format!(
+        "{} {:.2}, {} {:.2}, {} {:.2}",
+        scores[0].0, scores[0].1, scores[1].0, scores[1].1, scores[2].0, scores[2].1
+    )
+}
+
+fn target_label(target: Option<Vec2>) -> String {
+    target
+        .map(|target| format!("{:.0}, {:.0}", target.x, target.y))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn npc_reproduction_state(
+    npc: &Npc,
+    lifecycle: &Lifecycle,
+    needs: &Needs,
+    home: &NpcHome,
+    pregnancy: Option<&NpcPregnancy>,
+) -> String {
+    if let Some(pregnancy) = pregnancy {
+        return format!("pregnant ({:.1}d left)", pregnancy.gestation_days);
+    }
+
+    let mut blockers = Vec::new();
+    if lifecycle.age_days < lifecycle.maturity_age {
+        blockers.push("immature");
+    }
+    if lifecycle.reproduction_cooldown > 0.0 {
+        blockers.push("cooldown");
+    }
+    if npc.health < 32.0 {
+        blockers.push("health < 32");
+    }
+    if needs.hunger > (0.74 - npc.reproduction_drive * 0.10).clamp(0.40, 0.82) {
+        blockers.push("too hungry");
+    }
+    if needs.fatigue > (0.90 - npc.reproduction_drive * 0.08).clamp(0.55, 0.92) {
+        blockers.push("too fatigued");
+    }
+    if needs.safety < (0.18 - npc.risk_tolerance * 0.04).clamp(0.05, 0.22) {
+        blockers.push("unsafe");
+    }
+    if npc.sex == crate::agents::npc::NpcSex::Female && home.shelter.is_none() {
+        blockers.push("no home shelter");
+    }
+
+    if blockers.is_empty() {
+        "eligible pending partner/resources/cycle".to_string()
+    } else {
+        format!("blocked: {}", blockers.join(", "))
     }
 }
