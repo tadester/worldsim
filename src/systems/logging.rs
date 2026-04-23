@@ -30,6 +30,7 @@ pub enum LogEventKind {
     Territory,
     Threat,
     Climate,
+    Proposal,
 }
 
 #[derive(Message, Debug, Clone)]

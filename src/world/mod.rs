@@ -1,6 +1,7 @@
 pub mod climate;
 pub mod director;
 pub mod map;
+pub mod proposals;
 pub mod resources;
 pub mod spawning;
 pub mod territory;
@@ -9,6 +10,7 @@ use bevy::prelude::*;
 use climate::ClimatePlugin;
 use director::WorldDirectorPlugin;
 use map::{MapPlugin, MapSettings};
+use proposals::WorldProposalPlugin;
 use resources::WorldResourcesPlugin;
 use spawning::WorldSpawningPlugin;
 use territory::TerritoryPlugin;
@@ -24,6 +26,7 @@ impl Plugin for WorldPlugin {
             TerritoryPlugin,
             WorldSpawningPlugin,
             WorldDirectorPlugin,
+            WorldProposalPlugin,
         ));
     }
 }

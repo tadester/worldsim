@@ -1,13 +1,14 @@
 use bevy::prelude::*;
 
 use crate::agents::factions::Faction;
-use crate::agents::programs::WorldProgramState;
+use crate::agents::programs::{SocietyProgress, WorldProgramState};
 use crate::life::population::PopulationStats;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::{ClimateEventState, ClimateModel};
 use crate::world::director::WorldMind;
+use crate::world::proposals::WorldProposalQueue;
 use crate::world::resources::WorldStats;
 use crate::world::territory::Territory;
 
@@ -73,6 +74,8 @@ fn update_dashboard_text(
     trends: Res<TrendHistory>,
     world_mind: Res<WorldMind>,
     programs: Res<WorldProgramState>,
+    society: Res<SocietyProgress>,
+    proposals: Res<WorldProposalQueue>,
     factions: Query<(Entity, &Faction)>,
     territories: Query<&Territory>,
     mut text_query: Query<&mut Text, With<DashboardText>>,
@@ -211,7 +214,7 @@ fn update_dashboard_text(
             latest
         ));
         text.0.push_str(&format!(
-            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nWorld programs: {} unlocked | last: {}",
+            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
             world_mind.stance,
             world_mind.intent,
             world_mind.pressure,
@@ -222,8 +225,17 @@ fn update_dashboard_text(
             world_mind.thought,
             stats.avg_npc_exposure,
             stats.cold_stressed_npcs,
+            society.stage,
+            stats.civic_structures,
+            society.last_project,
             programs.unlocked.len(),
-            programs.last_reason
+            programs.last_reason,
+            proposals.proposals.len(),
+            proposals
+                .proposals
+                .last()
+                .map(|proposal| format!(" | latest: {}", proposal.title))
+                .unwrap_or_default()
         ));
     }
 }
@@ -258,7 +270,8 @@ fn update_trend_history(
             | LogEventKind::Construction
             | LogEventKind::Territory
             | LogEventKind::Threat
-            | LogEventKind::Climate => {}
+            | LogEventKind::Climate
+            | LogEventKind::Proposal => {}
         }
     }
 
@@ -286,5 +299,6 @@ fn event_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Territory => "Territory",
         LogEventKind::Threat => "Threat",
         LogEventKind::Climate => "Climate",
+        LogEventKind::Proposal => "Proposal",
     }
 }

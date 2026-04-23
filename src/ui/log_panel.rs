@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::systems::logging::{EventLog, LogEventKind, NpcDeathLog};
 use crate::ui::{DiagnosticsLogPane, DiagnosticsNpcDeathPane, DiagnosticsUiCamera};
+use crate::world::proposals::WorldProposalQueue;
 
 #[derive(Component)]
 struct EventLogText;
@@ -67,7 +68,11 @@ fn spawn_log_panel(
     });
 }
 
-fn update_log_panel(log: Res<EventLog>, mut query: Query<&mut Text, With<EventLogText>>) {
+fn update_log_panel(
+    log: Res<EventLog>,
+    proposals: Res<WorldProposalQueue>,
+    mut query: Query<&mut Text, With<EventLogText>>,
+) {
     let lines = {
         let start = log.entries.len().saturating_sub(12);
         let mut out = String::new();
@@ -91,10 +96,40 @@ fn update_log_panel(log: Res<EventLog>, mut query: Query<&mut Text, With<EventLo
     } else {
         lines
     };
+    let proposal_display = proposal_lines(&proposals);
+    let proposal_display = if proposal_display.is_empty() {
+        "No proposals yet".to_string()
+    } else {
+        proposal_display
+    };
 
     for mut text in &mut query {
-        *text = Text::new(format!("Event Log\n{}\n", display));
+        *text = Text::new(format!(
+            "Event Log\n{}\n\nWorld Requests\n{}",
+            display, proposal_display
+        ));
     }
+}
+
+fn proposal_lines(proposals: &WorldProposalQueue) -> String {
+    let start = proposals.proposals.len().saturating_sub(3);
+    let mut out = String::new();
+    for proposal in &proposals.proposals[start..] {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        use std::fmt::Write;
+        let _ = write!(
+            out,
+            "[{:.1}] {}\nProblem: {}\nSolution: {}\nRequest: {}",
+            proposal.day,
+            proposal.title,
+            proposal.problem,
+            proposal.proposed_solution,
+            proposal.request
+        );
+    }
+    out
 }
 
 fn update_npc_death_log_panel(
@@ -137,5 +172,6 @@ fn short_label(kind: LogEventKind) -> &'static str {
         LogEventKind::Territory => "@",
         LogEventKind::Threat => "!",
         LogEventKind::Climate => "~",
+        LogEventKind::Proposal => "?",
     }
 }

@@ -4,6 +4,7 @@ use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
 use crate::agents::inventory::Inventory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
+use crate::agents::programs::{KnownPrograms, ProgramId};
 use crate::life::growth::Lifecycle;
 use crate::life::population::{PopulationKind, PopulationStats};
 use crate::magic::mana::ManaReservoir;
@@ -273,25 +274,19 @@ fn npc_reproduction(
             continue;
         }
 
-        let Some(home_entity) = home.shelter else {
-            continue;
-        };
-        let (shelter, stockpile) = shelters
-            .get(home_entity)
-            .ok()
-            .map(|(shelter, stockpile)| (*shelter, stockpile.copied().unwrap_or_default()))
-            .unwrap_or((
-                crate::world::resources::Shelter {
-                    integrity: 0.0,
-                    safety_bonus: 0.0,
-                    insulation: 0.0,
-                },
-                ShelterStockpile::default(),
-            ));
-
-        let resource_security =
-            stockpile.food + inventory.food + stockpile.wood * 0.30 + shelter.integrity * 2.0;
-        if resource_security < (1.35 - npc.reproduction_drive * 0.22).clamp(0.8, 1.35) {
+        let home_security = home
+            .shelter
+            .and_then(|home_entity| shelters.get(home_entity).ok())
+            .map(|(shelter, stockpile)| {
+                let stockpile = stockpile.copied().unwrap_or_default();
+                stockpile.food + inventory.food + stockpile.wood * 0.20 + shelter.integrity * 1.2
+            })
+            .unwrap_or(inventory.food);
+        let social_resilience = npc.reproduction_drive * 0.22 + npc.risk_tolerance * 0.10;
+        if home_security + social_resilience
+            < (0.62 - npc.reproduction_drive * 0.10).clamp(0.32, 0.62)
+            && needs.safety < 0.45
+        {
             continue;
         }
 
@@ -303,7 +298,8 @@ fn npc_reproduction(
                     return false;
                 }
                 let distance = mother_pos.distance(*pos);
-                (*partner_home == Some(home_entity) && distance < 84.0) || distance < 36.0
+                (home.shelter.is_some() && *partner_home == home.shelter && distance < 84.0)
+                    || distance < 56.0
             });
         if !partner_match {
             continue;
@@ -345,6 +341,7 @@ fn resolve_npc_births(
         &Npc,
         &ManaReservoir,
         &ManaStorageStyle,
+        Option<&KnownPrograms>,
         &mut NpcPregnancy,
     )>,
 ) {
@@ -353,7 +350,8 @@ fn resolve_npc_births(
         return;
     }
 
-    for (entity, transform, npc, reservoir, mana_style, mut pregnancy) in &mut npcs {
+    for (entity, transform, npc, reservoir, mana_style, known_programs, mut pregnancy) in &mut npcs
+    {
         pregnancy.gestation_days -= delta_days;
         if pregnancy.gestation_days > 0.0 {
             continue;
@@ -375,7 +373,25 @@ fn resolve_npc_births(
             NpcGender::Man
         };
         let child_seed = (birth_seed % 17) as f32 / 16.0;
-        commands.spawn(
+        let mut child_programs = KnownPrograms::default();
+        if let Some(parent_programs) = known_programs {
+            child_programs.known.clear();
+            for program in parent_programs.known.iter().copied() {
+                if inherited_program(program, child_seed) {
+                    child_programs.learn(program);
+                }
+            }
+            for starter in [
+                ProgramId::Foraging,
+                ProgramId::WaterFinding,
+                ProgramId::Storykeeping,
+            ] {
+                child_programs.learn(starter);
+            }
+            child_programs.last_grant_reason = format!("Inherited from {}", npc.name);
+        }
+
+        commands.spawn((
             NpcBundle::new(
                 transform.translation.truncate() + offset,
                 child_name,
@@ -396,7 +412,8 @@ fn resolve_npc_births(
                 (npc.risk_tolerance * 0.80 + 0.15 + child_seed * 0.16).clamp(0.0, 1.4),
             )
             .with_age_days(0.0),
-        );
+            child_programs,
+        ));
         commands.entity(entity).remove::<NpcPregnancy>();
         population.record_birth(PopulationKind::Npc, step.elapsed_days);
         writer.write(LogEvent::new(
@@ -404,6 +421,20 @@ fn resolve_npc_births(
             format!("A child was born to {}", npc.name),
         ));
     }
+}
+
+fn inherited_program(program: ProgramId, seed: f32) -> bool {
+    matches!(
+        program,
+        ProgramId::Foraging
+            | ProgramId::WaterFinding
+            | ProgramId::Firemaking
+            | ProgramId::ShelterBuilding
+            | ProgramId::Toolmaking
+            | ProgramId::Storykeeping
+            | ProgramId::Childcare
+            | ProgramId::Teaching
+    ) || seed > 0.28
 }
 
 fn resolve_animal_births(

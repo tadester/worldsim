@@ -16,7 +16,7 @@ use crate::magic::mana::ManaReservoir;
 use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
-use crate::world::resources::{Shelter, ShelterStockpile, Tree, TreeStage};
+use crate::world::resources::{CivicStructure, Shelter, ShelterStockpile, Tree, TreeStage};
 use crate::world::territory::Territory;
 
 #[derive(Resource, Default)]
@@ -64,6 +64,7 @@ fn cycle_selected_entity(
     keys: Res<ButtonInput<KeyCode>>,
     trees: Query<(Entity, &Transform), With<Tree>>,
     shelters: Query<(Entity, &Transform), With<Shelter>>,
+    civic_structures: Query<(Entity, &Transform), With<CivicStructure>>,
     animals: Query<(Entity, &Transform), With<Animal>>,
     predators: Query<(Entity, &Transform), With<Predator>>,
     npcs: Query<(Entity, &Transform), With<Npc>>,
@@ -78,6 +79,9 @@ fn cycle_selected_entity(
             .iter()
             .map(|(entity, transform)| (entity, transform.translation.x, transform.translation.y))
             .chain(shelters.iter().map(|(entity, transform)| {
+                (entity, transform.translation.x, transform.translation.y)
+            }))
+            .chain(civic_structures.iter().map(|(entity, transform)| {
                 (entity, transform.translation.x, transform.translation.y)
             }))
             .chain(animals.iter().map(|(entity, transform)| {
@@ -113,6 +117,7 @@ fn update_inspector(
         &Transform,
         Option<&FactionMember>,
     )>,
+    civic_structures: Query<(&CivicStructure, &Transform)>,
     animals: Query<(&Animal, &Lifecycle, &Transform, Option<&Pregnancy>)>,
     predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
@@ -166,6 +171,14 @@ fn update_inspector(
                 shelter.safety_bonus,
                 shelter.insulation,
                 stockpile_line,
+                transform.translation.x,
+                transform.translation.y,
+            )
+        } else if let Ok((structure, transform)) = civic_structures.get(entity) {
+            format!(
+                "Type: Civic Structure\nKind: {}\nProgress: {:.0}%\nPos: {:.0}, {:.0}",
+                structure.kind.label(),
+                structure.progress.clamp(0.0, 1.0) * 100.0,
                 transform.translation.x,
                 transform.translation.y,
             )
@@ -358,7 +371,7 @@ fn update_inspector(
             "Selected entity no longer exists".to_string()
         }
     } else {
-        "No entity selected\nPress Tab to cycle through trees, shelters, animals, predators, and NPCs"
+        "No entity selected\nPress Tab to cycle through trees, shelters, civic structures, animals, predators, and NPCs"
             .to_string()
     };
 
@@ -498,12 +511,18 @@ fn npc_reproduction_state(
     if needs.safety < (0.18 - npc.risk_tolerance * 0.04).clamp(0.05, 0.22) {
         blockers.push("unsafe");
     }
-    if npc.sex == crate::agents::npc::NpcSex::Female && home.shelter.is_none() {
-        blockers.push("no home shelter");
-    }
+    let shelter_context = if npc.sex == crate::agents::npc::NpcSex::Female && home.shelter.is_none()
+    {
+        " | no shelter bonus"
+    } else {
+        ""
+    };
 
     if blockers.is_empty() {
-        "eligible pending partner/resources/cycle".to_string()
+        format!(
+            "eligible pending partner/resources/cycle{}",
+            shelter_context
+        )
     } else {
         format!("blocked: {}", blockers.join(", "))
     }

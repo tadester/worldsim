@@ -48,6 +48,37 @@ pub struct ShelterStockpile {
     pub max_wood: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CivicStructureKind {
+    Fence,
+    Workshop,
+    Nursery,
+    WatchPost,
+    Granary,
+    Forge,
+    TownHall,
+}
+
+impl CivicStructureKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fence => "Fence",
+            Self::Workshop => "Workshop",
+            Self::Nursery => "Nursery",
+            Self::WatchPost => "Watch Post",
+            Self::Granary => "Granary",
+            Self::Forge => "Forge",
+            Self::TownHall => "Town Hall",
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CivicStructure {
+    pub kind: CivicStructureKind,
+    pub progress: f32,
+}
+
 impl Default for ShelterStockpile {
     fn default() -> Self {
         Self {
@@ -80,6 +111,12 @@ struct CampfireCore;
 #[derive(Component)]
 struct CampfireGlow;
 
+#[derive(Component)]
+struct CivicStructureBody;
+
+#[derive(Component)]
+struct CivicStructureAccent;
+
 #[derive(Resource, Default)]
 pub struct WorldStats {
     pub trees: usize,
@@ -88,6 +125,7 @@ pub struct WorldStats {
     pub npcs: usize,
     pub shelters: usize,
     pub campfires: usize,
+    pub civic_structures: usize,
     pub avg_mana_density: f32,
     pub avg_animal_capacity: f32,
     pub avg_tree_capacity: f32,
@@ -118,6 +156,8 @@ impl Plugin for WorldResourcesPlugin {
                 sync_shelter_visuals,
                 attach_campfire_visuals,
                 sync_campfire_visuals,
+                attach_civic_structure_visuals,
+                sync_civic_structure_visuals,
                 burn_campfires,
                 decay_shelter_integrity,
                 regrow_region_resources,
@@ -187,6 +227,27 @@ fn attach_campfire_visuals(mut commands: Commands, campfires: Query<Entity, Adde
                 Sprite::from_color(Color::srgba(0.96, 0.58, 0.14, 0.65), Vec2::new(12.0, 14.0)),
                 Transform::from_xyz(0.0, 3.0, 0.2),
                 CampfireGlow,
+            ));
+        });
+    }
+}
+
+fn attach_civic_structure_visuals(
+    mut commands: Commands,
+    structures: Query<(Entity, &CivicStructure), Added<CivicStructure>>,
+) {
+    for (entity, structure) in &structures {
+        let (body_size, accent_size) = civic_structure_sizes(structure.kind);
+        commands.entity(entity).with_children(|parent| {
+            parent.spawn((
+                Sprite::from_color(civic_structure_color(structure.kind), body_size),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+                CivicStructureBody,
+            ));
+            parent.spawn((
+                Sprite::from_color(civic_structure_accent_color(structure.kind), accent_size),
+                Transform::from_xyz(0.0, body_size.y * 0.35, 0.2),
+                CivicStructureAccent,
             ));
         });
     }
@@ -319,6 +380,29 @@ fn sync_campfire_visuals(
     }
 }
 
+fn sync_civic_structure_visuals(
+    structures: Query<
+        (&CivicStructure, &Children),
+        Or<(Changed<CivicStructure>, Added<CivicStructure>)>,
+    >,
+    mut bodies: Query<&mut Sprite, With<CivicStructureBody>>,
+    mut accents: Query<&mut Sprite, (With<CivicStructureAccent>, Without<CivicStructureBody>)>,
+) {
+    for (structure, children) in &structures {
+        let completion = structure.progress.clamp(0.0, 1.0);
+        for child in children.iter() {
+            if let Ok(mut sprite) = bodies.get_mut(child) {
+                sprite.color =
+                    civic_structure_color(structure.kind).with_alpha(0.35 + completion * 0.65);
+            }
+            if let Ok(mut sprite) = accents.get_mut(child) {
+                sprite.color = civic_structure_accent_color(structure.kind)
+                    .with_alpha(0.25 + completion * 0.75);
+            }
+        }
+    }
+}
+
 fn burn_campfires(clock: Res<SimulationClock>, mut campfires: Query<&mut Campfire>) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
@@ -397,6 +481,7 @@ fn update_world_stats(
     npcs: Query<&crate::agents::npc::Npc>,
     shelters: Query<&Shelter>,
     campfires: Query<&Campfire>,
+    civic_structures: Query<&CivicStructure>,
     shelter_stockpiles: Query<&ShelterStockpile>,
     inventories: Query<&Inventory>,
     regions: Query<(&RegionTile, &RegionState, &RegionClimate)>,
@@ -432,6 +517,7 @@ fn update_world_stats(
     stats.npcs = npcs.iter().count();
     stats.shelters = shelters.iter().count();
     stats.campfires = campfires.iter().count();
+    stats.civic_structures = civic_structures.iter().count();
     let divisor = tile_count.max(1) as f32;
     stats.avg_mana_density = mana_total / divisor;
     stats.avg_animal_capacity = animal_capacity_total / divisor;
@@ -448,4 +534,40 @@ fn update_world_stats(
     let npc_count = stats.npcs.max(1) as f32;
     stats.avg_npc_exposure = npcs.iter().map(|npc| npc.exposure).sum::<f32>() / npc_count;
     stats.cold_stressed_npcs = npcs.iter().filter(|npc| npc.exposure > 0.45).count();
+}
+
+fn civic_structure_sizes(kind: CivicStructureKind) -> (Vec2, Vec2) {
+    match kind {
+        CivicStructureKind::Fence => (Vec2::new(38.0, 4.0), Vec2::new(4.0, 12.0)),
+        CivicStructureKind::Workshop => (Vec2::new(24.0, 16.0), Vec2::new(18.0, 5.0)),
+        CivicStructureKind::Nursery => (Vec2::new(22.0, 14.0), Vec2::new(10.0, 7.0)),
+        CivicStructureKind::WatchPost => (Vec2::new(10.0, 30.0), Vec2::new(18.0, 5.0)),
+        CivicStructureKind::Granary => (Vec2::new(20.0, 24.0), Vec2::new(24.0, 6.0)),
+        CivicStructureKind::Forge => (Vec2::new(24.0, 14.0), Vec2::new(10.0, 10.0)),
+        CivicStructureKind::TownHall => (Vec2::new(34.0, 22.0), Vec2::new(26.0, 7.0)),
+    }
+}
+
+fn civic_structure_color(kind: CivicStructureKind) -> Color {
+    match kind {
+        CivicStructureKind::Fence => Color::srgb(0.45, 0.30, 0.16),
+        CivicStructureKind::Workshop => Color::srgb(0.38, 0.34, 0.28),
+        CivicStructureKind::Nursery => Color::srgb(0.50, 0.42, 0.30),
+        CivicStructureKind::WatchPost => Color::srgb(0.33, 0.25, 0.18),
+        CivicStructureKind::Granary => Color::srgb(0.55, 0.44, 0.22),
+        CivicStructureKind::Forge => Color::srgb(0.26, 0.25, 0.24),
+        CivicStructureKind::TownHall => Color::srgb(0.44, 0.37, 0.29),
+    }
+}
+
+fn civic_structure_accent_color(kind: CivicStructureKind) -> Color {
+    match kind {
+        CivicStructureKind::Fence => Color::srgb(0.65, 0.45, 0.25),
+        CivicStructureKind::Workshop => Color::srgb(0.56, 0.48, 0.36),
+        CivicStructureKind::Nursery => Color::srgb(0.72, 0.60, 0.42),
+        CivicStructureKind::WatchPost => Color::srgb(0.70, 0.58, 0.36),
+        CivicStructureKind::Granary => Color::srgb(0.78, 0.62, 0.25),
+        CivicStructureKind::Forge => Color::srgb(0.94, 0.34, 0.12),
+        CivicStructureKind::TownHall => Color::srgb(0.68, 0.54, 0.34),
+    }
 }
