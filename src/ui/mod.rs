@@ -28,6 +28,12 @@ pub struct DiagnosticsLogPane(pub Entity);
 #[derive(Resource, Clone, Copy)]
 pub struct DiagnosticsNpcDeathPane(pub Entity);
 
+#[derive(Resource, Clone, Copy)]
+pub struct DiagnosticsWorldLogPane(pub Entity);
+
+#[derive(Resource, Clone, Copy)]
+pub struct DiagnosticsWorldSuggestionsPane(pub Entity);
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -125,13 +131,43 @@ fn spawn_diagnostics_window(mut commands: Commands) {
                 row_gap: px(12.0),
                 ..default()
             },
+            Visibility::Hidden,
             UiTargetCamera(diagnostics_camera),
         ))
         .id();
 
-    commands
-        .entity(diagnostics_root)
-        .add_children(&[log_pane, npc_death_pane]);
+    let world_log_pane = commands
+        .spawn((
+            Node {
+                width: percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12.0),
+                ..default()
+            },
+            Visibility::Hidden,
+            UiTargetCamera(diagnostics_camera),
+        ))
+        .id();
+
+    let world_suggestions_pane = commands
+        .spawn((
+            Node {
+                width: percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(12.0),
+                ..default()
+            },
+            Visibility::Hidden,
+            UiTargetCamera(diagnostics_camera),
+        ))
+        .id();
+
+    commands.entity(diagnostics_root).add_children(&[
+        log_pane,
+        npc_death_pane,
+        world_log_pane,
+        world_suggestions_pane,
+    ]);
     commands
         .entity(game_menu_root)
         .add_children(&[settings_pane]);
@@ -141,4 +177,6 @@ fn spawn_diagnostics_window(mut commands: Commands) {
     commands.insert_resource(DiagnosticsSettingsPane(settings_pane));
     commands.insert_resource(DiagnosticsLogPane(log_pane));
     commands.insert_resource(DiagnosticsNpcDeathPane(npc_death_pane));
+    commands.insert_resource(DiagnosticsWorldLogPane(world_log_pane));
+    commands.insert_resource(DiagnosticsWorldSuggestionsPane(world_suggestions_pane));
 }

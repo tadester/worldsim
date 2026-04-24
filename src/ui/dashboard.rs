@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::agents::factions::Faction;
 use crate::agents::programs::{SocietyProgress, WorldProgramState};
+use crate::agents::society::{DiplomacyState, FactionSociety};
 use crate::life::population::PopulationStats;
 use crate::systems::logging::{EventLog, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
@@ -76,8 +77,9 @@ fn update_dashboard_text(
     programs: Res<WorldProgramState>,
     society: Res<SocietyProgress>,
     proposals: Res<WorldProposalQueue>,
-    factions: Query<(Entity, &Faction)>,
+    factions: Query<(Entity, &Faction, Option<&FactionSociety>)>,
     territories: Query<&Territory>,
+    diplomacy: Res<DiplomacyState>,
     mut text_query: Query<&mut Text, With<DashboardText>>,
 ) {
     let latest = log
@@ -154,11 +156,26 @@ fn update_dashboard_text(
             factions
                 .get(entity)
                 .ok()
-                .map(|(_, faction)| (faction, count))
+                .map(|(_, faction, society)| (faction, society, count))
         })
-        .map(|(faction, count)| format!("{} {}", faction.name, count))
+        .map(|(faction, society, count)| {
+            let governance = society
+                .map(|society| society.governance.label())
+                .unwrap_or("Kin Circle");
+            format!("{} {} ({})", faction.name, count, governance)
+        })
         .collect::<Vec<_>>();
     faction_split.sort();
+    let active_wars = diplomacy
+        .relations
+        .values()
+        .filter(|pair| pair.at_war)
+        .count();
+    let active_feuds = diplomacy
+        .relations
+        .values()
+        .filter(|pair| pair.hostility > 0.55 && !pair.at_war)
+        .count();
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
@@ -214,7 +231,7 @@ fn update_dashboard_text(
             latest
         ));
         text.0.push_str(&format!(
-            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
+            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nEconomy: ore {:.1} | metal {:.1} | clothing {:.1} | weapons {:.1}\nDiplomacy: wars {} | feuds {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
             world_mind.stance,
             world_mind.intent,
             world_mind.pressure,
@@ -228,6 +245,12 @@ fn update_dashboard_text(
             society.stage,
             stats.civic_structures,
             society.last_project,
+            stats.total_ore,
+            stats.total_metal,
+            stats.total_clothing,
+            stats.total_weapons,
+            active_wars,
+            active_feuds,
             programs.unlocked.len(),
             programs.last_reason,
             proposals.proposals.len(),

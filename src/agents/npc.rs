@@ -4,6 +4,7 @@ use crate::agents::decisions::NpcIntent;
 use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
+use crate::agents::personality::{NpcPsyche, PersonalityType};
 use crate::agents::relationships::Relationships;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
@@ -68,6 +69,7 @@ pub struct Npc {
     pub discovery_drive: f32,
     pub aggression_drive: f32,
     pub risk_tolerance: f32,
+    pub personality: PersonalityType,
 }
 
 #[derive(Component, Debug, Clone, Default)]
@@ -87,6 +89,7 @@ pub struct NpcBundle {
     pub intent: NpcIntent,
     pub home: NpcHome,
     pub inventory: Inventory,
+    pub psyche: NpcPsyche,
     pub mana_reservoir: ManaReservoir,
     pub mana_style: ManaStorageStyle,
     pub mana_practice: ManaPractice,
@@ -117,6 +120,7 @@ impl NpcBundle {
                 discovery_drive: 0.9,
                 aggression_drive: 0.3,
                 risk_tolerance: 0.5,
+                personality: PersonalityType::Builder,
             },
             lifecycle: Lifecycle {
                 age_days: 0.0,
@@ -131,6 +135,7 @@ impl NpcBundle {
             intent: NpcIntent::default(),
             home: NpcHome::default(),
             inventory: Inventory::default(),
+            psyche: NpcPsyche::default(),
             mana_reservoir,
             mana_style,
             mana_practice: ManaPractice::default(),
@@ -165,6 +170,43 @@ impl NpcBundle {
         self.npc.discovery_drive = discovery_drive.clamp(0.1, 1.6);
         self.npc.aggression_drive = aggression_drive.clamp(0.0, 1.6);
         self.npc.risk_tolerance = risk_tolerance.clamp(0.0, 1.4);
+        self.psyche.personality = if aggression_drive > 1.0 {
+            PersonalityType::Raider
+        } else if discovery_drive > 1.20 && aggression_drive < 0.35 {
+            PersonalityType::Mystic
+        } else if discovery_drive > 1.15 {
+            PersonalityType::Scholar
+        } else if reproduction_drive > 1.15 {
+            PersonalityType::Caregiver
+        } else if risk_tolerance > 0.9 {
+            PersonalityType::Sovereign
+        } else {
+            PersonalityType::Builder
+        };
+        self.npc.personality = self.psyche.personality;
+        self
+    }
+
+    pub fn with_personality(
+        mut self,
+        personality: PersonalityType,
+        pride: f32,
+        greed: f32,
+        lust: f32,
+        envy: f32,
+        gluttony: f32,
+        wrath: f32,
+        sloth: f32,
+    ) -> Self {
+        self.npc.personality = personality;
+        self.psyche.personality = personality;
+        self.psyche.pride = pride.clamp(0.0, 1.0);
+        self.psyche.greed = greed.clamp(0.0, 1.0);
+        self.psyche.lust = lust.clamp(0.0, 1.0);
+        self.psyche.envy = envy.clamp(0.0, 1.0);
+        self.psyche.gluttony = gluttony.clamp(0.0, 1.0);
+        self.psyche.wrath = wrath.clamp(0.0, 1.0);
+        self.psyche.sloth = sloth.clamp(0.0, 1.0);
         self
     }
 }

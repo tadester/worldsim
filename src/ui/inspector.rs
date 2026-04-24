@@ -8,8 +8,10 @@ use crate::agents::memory::Memory;
 use crate::agents::mind::NpcMind;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
+use crate::agents::personality::NpcPsyche;
 use crate::agents::predator::Predator;
 use crate::agents::programs::KnownPrograms;
+use crate::agents::society::{DiplomacyState, FactionSociety};
 use crate::life::growth::Lifecycle;
 use crate::life::reproduction::NpcPregnancy;
 use crate::magic::mana::ManaReservoir;
@@ -121,8 +123,10 @@ fn update_inspector(
     animals: Query<(&Animal, &Lifecycle, &Transform, Option<&Pregnancy>)>,
     predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
+    faction_societies: Query<&FactionSociety>,
     regions: Query<(&RegionTile, &Territory)>,
     climates: Query<(&RegionTile, &RegionClimate)>,
+    diplomacy: Res<DiplomacyState>,
     npcs: Query<(
         &Npc,
         &Lifecycle,
@@ -136,6 +140,7 @@ fn update_inspector(
         Option<&FactionMember>,
         Option<&NpcPregnancy>,
         Option<&NpcMind>,
+        Option<&NpcPsyche>,
         Option<&KnownPrograms>,
     )>,
     mut query: Query<&mut Text, With<InspectorText>>,
@@ -236,6 +241,7 @@ fn update_inspector(
             member,
             pregnancy,
             mind,
+            psyche,
             programs,
         )) = npcs.get(entity)
         {
@@ -257,6 +263,31 @@ fn update_inspector(
                 .and_then(|member| factions.get(member.faction).ok())
                 .map(|faction| faction.name.as_str())
                 .unwrap_or("none");
+            let governance_line = member
+                .and_then(|member| {
+                    faction_societies
+                        .get(member.faction)
+                        .ok()
+                        .map(|society| (member.faction, society))
+                })
+                .map(|(faction, society)| {
+                    let war_line = diplomacy
+                        .relations
+                        .iter()
+                        .find(|((left, right), pair)| {
+                            pair.at_war && (*left == faction || *right == faction)
+                        })
+                        .map(|(_, pair)| format!("at war {:.2}", pair.hostility))
+                        .unwrap_or_else(|| "at peace".to_string());
+                    format!(
+                        "Governance: {} | cohesion {:.2} | care {:.2} | {}",
+                        society.governance.label(),
+                        society.cohesion,
+                        society.care_drive,
+                        war_line
+                    )
+                })
+                .unwrap_or_else(|| "Governance: none".to_string());
 
             let coord = settings.tile_coord_for_position(transform.translation.truncate());
             let territory_line = regions
@@ -320,20 +351,38 @@ fn update_inspector(
                     )
                 })
                 .unwrap_or_else(|| "Programs: not initialized".to_string());
+            let psyche_line = psyche
+                .map(|psyche| {
+                    format!(
+                        "Psyche: {} | happiness {:.2}\nSins P/G/L/E/Gl/W/Sl: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}",
+                        psyche.personality.label(),
+                        psyche.happiness,
+                        psyche.pride,
+                        psyche.greed,
+                        psyche.lust,
+                        psyche.envy,
+                        psyche.gluttony,
+                        psyche.wrath,
+                        psyche.sloth
+                    )
+                })
+                .unwrap_or_else(|| "Psyche: not initialized".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\n{}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nCraft S/Fi/Hi/O/M/C/W: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.sex.label(),
                 npc.gender.label(),
                 lifecycle.age_days / 365.0,
                 lifecycle.maturity_age / 365.0,
                 faction_line,
+                governance_line,
                 coord.x,
                 coord.y,
                 territory_line,
                 climate_line,
                 mind_line,
+                psyche_line,
                 programs_line,
                 npc.health,
                 intent.label,
@@ -357,6 +406,13 @@ fn update_inspector(
                 npc.risk_tolerance,
                 inventory.food,
                 inventory.wood,
+                inventory.seeds,
+                inventory.fiber,
+                inventory.hides,
+                inventory.ore,
+                inventory.metal,
+                inventory.clothing,
+                inventory.weapons,
                 npc.tool_knowledge,
                 npc.woodcutting_tools,
                 npc.exposure,

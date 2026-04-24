@@ -7,9 +7,11 @@ use crate::agents::inventory::Inventory;
 use crate::agents::memory::Memory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcHome};
+use crate::agents::personality::NpcPsyche;
 use crate::agents::predator::Predator;
 use crate::agents::programs::{KnownPrograms, ProgramId};
 use crate::agents::relationships::Relationships;
+use crate::agents::society::{DiplomacyState, FactionSociety};
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
 use crate::world::climate::{ClimateModel, RegionClimate};
@@ -49,6 +51,7 @@ impl Plugin for DecisionPlugin {
                 harvest_npc_resources,
                 develop_and_craft_tools,
                 resolve_npc_violence,
+                resolve_npc_raids.after(resolve_npc_violence),
                 transfer_home_stockpiles,
                 withdraw_home_food,
                 consume_carried_food,
@@ -72,7 +75,7 @@ fn evaluate_npc_intents(
         &RegionClimate,
         Option<&Territory>,
     )>,
-    npc_positions: Query<(Entity, &Transform, Option<&FactionMember>), With<Npc>>,
+    npc_positions: Query<(Entity, &Transform, Option<&FactionMember>, &Needs, &Npc), With<Npc>>,
     predators: Query<(Entity, &Transform), With<Predator>>,
     campfires: Query<(Entity, &Campfire, &Transform, Option<&FactionMember>)>,
     shelters: Query<(
@@ -86,6 +89,7 @@ fn evaluate_npc_intents(
         Entity,
         &Transform,
         &Npc,
+        &NpcPsyche,
         &Needs,
         &Relationships,
         &mut Memory,
@@ -95,6 +99,8 @@ fn evaluate_npc_intents(
         Option<&FactionMember>,
         Option<&KnownPrograms>,
     )>,
+    faction_societies: Query<&FactionSociety>,
+    diplomacy: Res<DiplomacyState>,
 ) {
     let mut region_index: HashMap<IVec2, (RegionTile, RegionState, f32, f32, Option<Entity>)> =
         HashMap::new();
@@ -186,13 +192,14 @@ fn evaluate_npc_intents(
         }
     }
 
-    let positions: Vec<(Entity, Vec2, Option<Entity>)> = npc_positions
+    let positions: Vec<(Entity, Vec2, Option<Entity>, f32)> = npc_positions
         .iter()
-        .map(|(entity, transform, member)| {
+        .map(|(entity, transform, member, needs, npc)| {
             (
                 entity,
                 transform.translation.truncate(),
                 member.map(|member| member.faction),
+                needs.hunger.max(1.0 - needs.safety).max(npc.exposure),
             )
         })
         .collect();
@@ -205,6 +212,7 @@ fn evaluate_npc_intents(
         entity,
         transform,
         npc,
+        psyche,
         needs,
         relationships,
         mut memory,
@@ -283,32 +291,70 @@ fn evaluate_npc_intents(
         let nearest_same_faction = faction.and_then(|faction| {
             positions
                 .iter()
-                .filter(|(other, _, other_faction)| {
+                .filter(|(other, _, other_faction, _)| {
                     *other != entity && *other_faction == Some(faction)
                 })
-                .min_by(|(_, a, _), (_, b, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
-                .map(|(_, other_pos, _)| *other_pos)
+                .min_by(|(_, a, _, _), (_, b, _, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, other_pos, _, _)| *other_pos)
+        });
+        let nearest_distressed_ally = faction.and_then(|faction| {
+            positions
+                .iter()
+                .filter(|(other, _, other_faction, distress)| {
+                    *other != entity && *other_faction == Some(faction) && *distress > 0.45
+                })
+                .min_by(|(_, a, _, _), (_, b, _, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, ally_pos, _, distress)| (*ally_pos, *distress))
         });
         let nearest_other = nearest_same_faction.or_else(|| {
             positions
                 .iter()
-                .filter(|(other, _, _)| *other != entity)
-                .min_by(|(_, a, _), (_, b, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
-                .map(|(_, other_pos, _)| *other_pos)
+                .filter(|(other, _, _, _)| *other != entity)
+                .min_by(|(_, a, _, _), (_, b, _, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .map(|(_, other_pos, _, _)| *other_pos)
         });
+        let society = faction.and_then(|faction| faction_societies.get(faction).ok());
+        let peace_bias = society.map(|society| society.peace_bias).unwrap_or(0.45);
+        let care_bias = society.map(|society| society.care_drive).unwrap_or(0.40);
+        let settlement_bias = society
+            .map(|society| society.settlement_drive)
+            .unwrap_or(0.24);
+        let war_bias = society.map(|society| society.war_pressure).unwrap_or(0.18);
+        let peaceful_personality = matches!(
+            psyche.personality,
+            crate::agents::personality::PersonalityType::Caregiver
+                | crate::agents::personality::PersonalityType::Builder
+                | crate::agents::personality::PersonalityType::Scholar
+                | crate::agents::personality::PersonalityType::Mystic
+        ) && npc.aggression_drive < 0.72;
+        let group_survival_utility = nearest_distressed_ally
+            .map(|(ally_pos, distress)| {
+                let closeness = (1.0 - pos.distance(ally_pos) / 150.0).clamp(0.0, 1.0);
+                distress
+                    * closeness
+                    * (0.22
+                        + care_bias * 0.42
+                        + relationships.affinity * 0.24
+                        + if peaceful_personality { 0.18 } else { 0.06 })
+            })
+            .unwrap_or(0.0);
 
         let food_ratio = inventory.food_ratio();
-        let hunger_utility = (needs.hunger * 1.4 + needs.thirst * 0.4)
+        let hunger_utility = (needs.hunger * (1.2 + psyche.gluttony * 0.8) + needs.thirst * 0.4)
             * (1.15 - food_ratio * 0.55)
             * (0.85 + npc.reproduction_drive * 0.35);
-        let social_utility = (1.0 - needs.social)
+        let social_utility = ((1.0 - needs.social)
             * relationships.social_drive
-            * (0.7 + npc.reproduction_drive * 0.45);
-        let safety_utility = (1.0 - needs.safety) * (0.8 + relationships.fear)
+            * (0.7 + npc.reproduction_drive * 0.45))
+            + group_survival_utility * 0.20
+            + peace_bias * 0.10;
+        let safety_utility = ((1.0 - needs.safety) * (0.8 + relationships.fear)
             + local_pressure * 0.55
-            - npc.risk_tolerance * 0.20;
+            - npc.risk_tolerance * 0.20)
+            + group_survival_utility * 0.28;
         let curiosity_utility =
             needs.curiosity * npc.curiosity * 0.8 * (0.75 + npc.discovery_drive * 0.5);
+        let happiness_utility = (1.0 - psyche.happiness) * (0.35 + psyche.pride * 0.25);
         let cold_risk = ((0.42 - local_temperature).max(0.0) / 0.42).clamp(0.0, 1.0)
             * (0.55 + local_pressure * 0.45);
         let nearest_fire = campfires
@@ -353,11 +399,16 @@ fn evaluate_npc_intents(
                 + npc.exposure * 0.75
                 + npc.reproduction_drive * 0.45)
                 * (1.12 - local_pressure * 0.35)
+                + group_survival_utility * 0.62
+                + settlement_bias * 0.30
         } else {
             0.0
         };
         let build_fire_utility = if inventory.wood >= 0.35 && !fire_nearby && knows_firemaking {
-            cold_risk * 1.6 + npc.exposure * 1.4 + (1.0 - needs.safety) * 0.35
+            cold_risk * 1.6
+                + npc.exposure * 1.4
+                + (1.0 - needs.safety) * 0.35
+                + group_survival_utility * 0.74
         } else {
             0.0
         };
@@ -388,7 +439,9 @@ fn evaluate_npc_intents(
             && (home_stockpiled_wood + inventory.wood) > 0.15
             && knows_shelter_repair
         {
-            (1.0 - home_integrity) * 1.1 + (1.0 - needs.safety) * 0.25
+            (1.0 - home_integrity) * 1.1
+                + (1.0 - needs.safety) * 0.25
+                + group_survival_utility * 0.36
         } else {
             0.0
         };
@@ -403,6 +456,9 @@ fn evaluate_npc_intents(
                     + local_biomass * 0.14
                     + if home_position.is_none() { 0.42 } else { 0.0 }
                     + cold_risk * 0.55
+                    + psyche.pride * 0.20
+                    + group_survival_utility * 0.34
+                    + settlement_bias * 0.18
                     + if has_usable_tools { 0.25 } else { 0.0 }
             } else {
                 0.0
@@ -416,19 +472,62 @@ fn evaluate_npc_intents(
             carrying_ratio * 0.85
                 + (inventory.food + inventory.wood) * 0.03
                 + npc.reproduction_drive * 0.22
+                + group_survival_utility * 0.30
+                + psyche.greed * 0.35
         } else {
             0.0
         };
-        let violence_utility = predator_positions
+        let enemy_npc_target = faction.and_then(|faction| {
+            positions
+                .iter()
+                .filter(|(other, _, other_faction, _)| {
+                    *other != entity && other_faction.is_some() && *other_faction != Some(faction)
+                })
+                .min_by(|(_, a, _, _), (_, b, _, _)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                .copied()
+        });
+        let hostile_war_state = faction
+            .zip(enemy_npc_target.and_then(|(_, _, enemy_faction, _)| enemy_faction))
+            .map(|(faction, enemy_faction)| {
+                (
+                    diplomacy.at_war(faction, enemy_faction),
+                    diplomacy.hostility_between(faction, enemy_faction),
+                )
+            })
+            .unwrap_or((false, 0.0));
+        let predator_violence_utility = predator_positions
             .iter()
             .map(|(_, predator_pos)| pos.distance(*predator_pos))
             .filter(|distance| *distance < 130.0)
             .min_by(|a, b| a.total_cmp(b))
             .map(|distance| {
                 let proximity = (1.0 - distance / 130.0).clamp(0.0, 1.0);
-                proximity * (npc.aggression_drive * 1.2 + npc.risk_tolerance * 0.5)
+                proximity
+                    * (npc.aggression_drive * 1.0 + psyche.wrath * 0.8 + npc.risk_tolerance * 0.4)
             })
             .unwrap_or(0.0);
+        let raid_utility = enemy_npc_target
+            .map(|(_, enemy_pos, _, _)| {
+                let distance = pos.distance(enemy_pos);
+                let proximity = (1.0 - distance / 160.0).clamp(0.0, 1.0);
+                let mut utility = proximity
+                    * (psyche.wrath * 0.85
+                        + psyche.greed * 0.65
+                        + psyche.envy * 0.45
+                        + npc.aggression_drive * 0.55
+                        + happiness_utility * 0.25
+                        + war_bias * 0.18);
+                if hostile_war_state.0 {
+                    utility += hostile_war_state.1 * 0.55 + war_bias * 0.35;
+                } else {
+                    utility *=
+                        (1.0 - peace_bias * 0.72 - if peaceful_personality { 0.35 } else { 0.0 })
+                            .clamp(0.05, 1.0);
+                }
+                utility
+            })
+            .unwrap_or(0.0);
+        let violence_utility = predator_violence_utility.max(raid_utility);
 
         let best_forage_for_faction = faction.and_then(|faction| {
             best_forage_by_faction
@@ -585,12 +684,21 @@ fn evaluate_npc_intents(
             && violence_utility >= toolmaking_utility
             && violence_utility >= stockpile_utility
         {
-            let target = predator_positions
-                .iter()
-                .min_by(|(_, a), (_, b)| pos.distance(*a).total_cmp(&pos.distance(*b)))
-                .map(|(_, predator_pos)| *predator_pos)
-                .unwrap_or(pos);
-            ("Hunt Predator".to_string(), target)
+            if raid_utility >= predator_violence_utility {
+                (
+                    "Raid".to_string(),
+                    enemy_npc_target
+                        .map(|(_, enemy_pos, _, _)| enemy_pos)
+                        .unwrap_or(pos),
+                )
+            } else {
+                let target = predator_positions
+                    .iter()
+                    .min_by(|(_, a), (_, b)| pos.distance(*a).total_cmp(&pos.distance(*b)))
+                    .map(|(_, predator_pos)| *predator_pos)
+                    .unwrap_or(pos);
+                ("Hunt Predator".to_string(), target)
+            }
         } else if hunger_utility >= social_utility
             && hunger_utility >= safety_utility
             && hunger_utility >= build_utility
@@ -1104,7 +1212,17 @@ fn develop_and_craft_tools(
 fn resolve_npc_violence(
     clock: Res<SimulationClock>,
     mut writer: MessageWriter<LogEvent>,
-    mut npcs: Query<(&mut Npc, &Transform, &NpcIntent, &mut Needs), With<Npc>>,
+    mut npcs: Query<
+        (
+            &mut Npc,
+            &Transform,
+            &NpcIntent,
+            &mut Needs,
+            &mut Inventory,
+            &mut NpcPsyche,
+        ),
+        With<Npc>,
+    >,
     mut predators: Query<(Entity, &Transform, &mut Predator)>,
 ) {
     let delta_days = clock.delta_days();
@@ -1112,7 +1230,7 @@ fn resolve_npc_violence(
         return;
     }
 
-    for (mut npc, transform, intent, mut needs) in &mut npcs {
+    for (mut npc, transform, intent, mut needs, mut inventory, mut psyche) in &mut npcs {
         if intent.label != "Hunt Predator" {
             continue;
         }
@@ -1133,12 +1251,162 @@ fn resolve_npc_violence(
             needs.fatigue = (needs.fatigue + retaliation * 0.08).min(1.0);
 
             if predator.health <= 0.0 {
+                let meat = 0.30 + delta_days * 0.90;
+                let hides = 0.18 + delta_days * 0.55;
+                inventory.food = (inventory.food + meat).min(inventory.max_food + 1.5);
+                inventory.hides += hides;
+                psyche.happiness = (psyche.happiness + 0.04 + psyche.wrath * 0.02).clamp(0.0, 1.0);
                 writer.write(LogEvent::new(
                     LogEventKind::Threat,
                     format!("{} killed a predator", npc.name),
                 ));
             }
             break;
+        }
+    }
+}
+
+fn resolve_npc_raids(
+    clock: Res<SimulationClock>,
+    diplomacy: Res<DiplomacyState>,
+    mut writer: MessageWriter<LogEvent>,
+    mut npcs: ParamSet<(
+        Query<(Entity, &Transform, &FactionMember, &NpcIntent), With<Npc>>,
+        Query<(Entity, &Transform, &FactionMember, &NpcIntent, &Inventory), With<Npc>>,
+        Query<(Entity, &mut Inventory, &mut NpcPsyche), With<Npc>>,
+        Query<
+            (
+                Entity,
+                &Transform,
+                &FactionMember,
+                &mut Npc,
+                &mut Inventory,
+                &mut NpcPsyche,
+            ),
+            With<Npc>,
+        >,
+    )>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    let raider_snapshots = npcs
+        .p0()
+        .iter()
+        .map(|(entity, transform, faction, intent)| {
+            (
+                entity,
+                transform.translation.truncate(),
+                faction.faction,
+                intent.label.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let victim_snapshots = npcs
+        .p1()
+        .iter()
+        .map(|(entity, transform, faction, intent, inventory)| {
+            (
+                entity,
+                transform.translation.truncate(),
+                faction.faction,
+                intent.label.clone(),
+                inventory.food,
+                inventory.wood,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let raid_plans = raider_snapshots
+        .iter()
+        .filter_map(|(raider_entity, raider_pos, raider_faction, label)| {
+            if label != "Raid" {
+                return None;
+            }
+
+            victim_snapshots
+                .iter()
+                .filter(|(victim_entity, _, victim_faction, victim_label, _, _)| {
+                    *victim_entity != *raider_entity
+                        && *victim_faction != *raider_faction
+                        && victim_label != "Raid"
+                })
+                .min_by(|(_, a, _, _, _, _), (_, b, _, _, _, _)| {
+                    raider_pos.distance(*a).total_cmp(&raider_pos.distance(*b))
+                })
+                .and_then(
+                    |(victim_entity, victim_pos, victim_faction, _, food, wood)| {
+                        if raider_pos.distance(*victim_pos) < 30.0 {
+                            let war_scale = if diplomacy.at_war(*raider_faction, *victim_faction) {
+                                1.85
+                            } else {
+                                1.0
+                            };
+                            Some((
+                                *raider_entity,
+                                *victim_entity,
+                                (*food).min(0.22 * delta_days * war_scale),
+                                (*wood).min(0.18 * delta_days * war_scale),
+                            ))
+                        } else {
+                            None
+                        }
+                    },
+                )
+        })
+        .collect::<Vec<_>>();
+
+    for (raider_entity, target_entity, planned_food, planned_wood) in raid_plans {
+        let raid_power = {
+            let mut raiders = npcs.p2();
+            let Ok((_, raider_inventory, raider_psyche)) = raiders.get_mut(raider_entity) else {
+                continue;
+            };
+            (0.30
+                + raider_psyche.wrath * 0.28
+                + raider_psyche.greed * 0.16
+                + raider_inventory.weapons * 0.22)
+                * delta_days
+        };
+
+        let (stolen_food, stolen_wood) = {
+            let mut victims = npcs.p3();
+            let Ok((_, _, _, mut victim_npc, mut victim_inventory, mut victim_psyche)) =
+                victims.get_mut(target_entity)
+            else {
+                continue;
+            };
+
+            let defense = 1.0 + victim_inventory.weapons * 0.18;
+            victim_npc.health = (victim_npc.health - raid_power * 12.0 / defense).max(0.0);
+            let stolen_food = victim_inventory.food.min(planned_food);
+            let stolen_wood = victim_inventory.wood.min(planned_wood);
+            victim_inventory.food -= stolen_food;
+            victim_inventory.wood -= stolen_wood;
+            victim_psyche.happiness =
+                (victim_psyche.happiness - (stolen_food + stolen_wood) * 0.10).max(0.0);
+            (stolen_food, stolen_wood)
+        };
+
+        let mut raiders = npcs.p2();
+        let Ok((_, mut raider_inventory, mut raider_psyche)) = raiders.get_mut(raider_entity)
+        else {
+            continue;
+        };
+        raider_inventory.food =
+            (raider_inventory.food + stolen_food).min(raider_inventory.max_food);
+        raider_inventory.wood =
+            (raider_inventory.wood + stolen_wood).min(raider_inventory.max_wood);
+
+        let loot_value = stolen_food + stolen_wood;
+        if loot_value > 0.0 {
+            raider_psyche.reward_loot(loot_value);
+            writer.write(LogEvent::new(
+                LogEventKind::Threat,
+                format!("A raid stole F {:.1} / W {:.1}", stolen_food, stolen_wood),
+            ));
         }
     }
 }
@@ -1200,6 +1468,14 @@ fn transfer_home_stockpiles(
                 deposited = true;
             }
         }
+
+        deposited |= deposit_misc(&mut inventory.seeds, &mut stockpile.seeds, delta_days);
+        deposited |= deposit_misc(&mut inventory.fiber, &mut stockpile.fiber, delta_days);
+        deposited |= deposit_misc(&mut inventory.hides, &mut stockpile.hides, delta_days);
+        deposited |= deposit_misc(&mut inventory.ore, &mut stockpile.ore, delta_days);
+        deposited |= deposit_misc(&mut inventory.metal, &mut stockpile.metal, delta_days);
+        deposited |= deposit_misc(&mut inventory.clothing, &mut stockpile.clothing, delta_days);
+        deposited |= deposit_misc(&mut inventory.weapons, &mut stockpile.weapons, delta_days);
 
         if deposited && carried_before > 0.2 && (inventory.food + inventory.wood) <= 0.02 {
             writer.write(LogEvent::new(
@@ -1290,24 +1566,33 @@ fn withdraw_home_food(
 
 fn consume_carried_food(
     clock: Res<SimulationClock>,
-    mut npcs: Query<(&mut Needs, &mut Inventory), With<Npc>>,
+    mut npcs: Query<(&mut Needs, &mut Inventory, &mut NpcPsyche), With<Npc>>,
 ) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
         return;
     }
 
-    for (mut needs, mut inventory) in &mut npcs {
+    for (mut needs, mut inventory, mut psyche) in &mut npcs {
         if inventory.food <= 0.0 || needs.hunger <= 0.02 {
             continue;
         }
 
-        let appetite = (0.26 + needs.hunger * 0.7) * delta_days;
+        let appetite = (0.26 + needs.hunger * 0.7 + psyche.gluttony * 0.18) * delta_days;
         let eaten = appetite.min(inventory.food);
         if eaten > 0.0 {
             inventory.food -= eaten;
             needs.hunger = (needs.hunger - eaten * 1.35).max(0.0);
             needs.fatigue = (needs.fatigue - eaten * 0.12).max(0.0);
+            let hedonist_bonus =
+                if psyche.personality == crate::agents::personality::PersonalityType::Hedonist {
+                    0.08
+                } else {
+                    0.0
+                };
+            psyche.happiness = (psyche.happiness
+                + eaten * (0.10 + psyche.gluttony * 0.12 + hedonist_bonus))
+                .clamp(0.0, 1.0);
         }
     }
 }
@@ -1679,13 +1964,16 @@ fn build_npc_shelters(
             &NpcIntent,
             &mut NpcHome,
             &mut Inventory,
+            &mut NpcPsyche,
             Option<&FactionMember>,
         ),
         With<Npc>,
     >,
     shelters: Query<&Transform, With<Shelter>>,
 ) {
-    for (entity, npc, transform, mut needs, intent, mut home, mut inventory, member) in &mut npcs {
+    for (entity, npc, transform, mut needs, intent, mut home, mut inventory, mut psyche, member) in
+        &mut npcs
+    {
         if intent.label != "Build Shelter" {
             continue;
         }
@@ -1730,6 +2018,7 @@ fn build_npc_shelters(
         }
 
         needs.safety = (needs.safety + 0.18).min(1.0);
+        psyche.reward_building();
         writer.write(LogEvent::new(
             LogEventKind::Construction,
             format!("{} built a shelter", npc.name),
@@ -1749,4 +2038,15 @@ fn tile_center(settings: &MapSettings, coord: IVec2) -> Vec2 {
         coord.x as f32 * settings.tile_size - bounds.x + settings.tile_size * 0.5,
         coord.y as f32 * settings.tile_size - bounds.y + settings.tile_size * 0.5,
     )
+}
+
+fn deposit_misc(carried: &mut f32, stored: &mut f32, delta_days: f32) -> bool {
+    let moved = (0.45 * delta_days).min(*carried);
+    if moved > 0.0 {
+        *carried -= moved;
+        *stored += moved;
+        true
+    } else {
+        false
+    }
 }

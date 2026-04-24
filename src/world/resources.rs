@@ -44,6 +44,13 @@ pub struct Campfire {
 pub struct ShelterStockpile {
     pub food: f32,
     pub wood: f32,
+    pub seeds: f32,
+    pub fiber: f32,
+    pub hides: f32,
+    pub ore: f32,
+    pub metal: f32,
+    pub clothing: f32,
+    pub weapons: f32,
     pub max_food: f32,
     pub max_wood: f32,
 }
@@ -84,6 +91,13 @@ impl Default for ShelterStockpile {
         Self {
             food: 0.0,
             wood: 0.0,
+            seeds: 0.0,
+            fiber: 0.0,
+            hides: 0.0,
+            ore: 0.0,
+            metal: 0.0,
+            clothing: 0.0,
+            weapons: 0.0,
             max_food: 12.0,
             max_wood: 12.0,
         }
@@ -138,6 +152,10 @@ pub struct WorldStats {
     pub total_wood_carried: f32,
     pub total_food_stockpiled: f32,
     pub total_wood_stockpiled: f32,
+    pub total_ore: f32,
+    pub total_metal: f32,
+    pub total_clothing: f32,
+    pub total_weapons: f32,
     pub avg_npc_exposure: f32,
     pub cold_stressed_npcs: usize,
 }
@@ -531,6 +549,23 @@ fn update_world_stats(
     stats.total_wood_carried = inventories.iter().map(|inv| inv.wood).sum();
     stats.total_food_stockpiled = shelter_stockpiles.iter().map(|pile| pile.food).sum();
     stats.total_wood_stockpiled = shelter_stockpiles.iter().map(|pile| pile.wood).sum();
+    stats.total_ore = inventories.iter().map(|inv| inv.ore).sum::<f32>()
+        + shelter_stockpiles.iter().map(|pile| pile.ore).sum::<f32>();
+    stats.total_metal = inventories.iter().map(|inv| inv.metal).sum::<f32>()
+        + shelter_stockpiles
+            .iter()
+            .map(|pile| pile.metal)
+            .sum::<f32>();
+    stats.total_clothing = inventories.iter().map(|inv| inv.clothing).sum::<f32>()
+        + shelter_stockpiles
+            .iter()
+            .map(|pile| pile.clothing)
+            .sum::<f32>();
+    stats.total_weapons = inventories.iter().map(|inv| inv.weapons).sum::<f32>()
+        + shelter_stockpiles
+            .iter()
+            .map(|pile| pile.weapons)
+            .sum::<f32>();
     let npc_count = stats.npcs.max(1) as f32;
     stats.avg_npc_exposure = npcs.iter().map(|npc| npc.exposure).sum::<f32>() / npc_count;
     stats.cold_stressed_npcs = npcs.iter().filter(|npc| npc.exposure > 0.45).count();

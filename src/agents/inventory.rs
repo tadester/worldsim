@@ -4,6 +4,13 @@ use bevy::prelude::*;
 pub struct Inventory {
     pub food: f32,
     pub wood: f32,
+    pub seeds: f32,
+    pub fiber: f32,
+    pub hides: f32,
+    pub ore: f32,
+    pub metal: f32,
+    pub clothing: f32,
+    pub weapons: f32,
     pub max_food: f32,
     pub max_wood: f32,
 }
@@ -13,6 +20,13 @@ impl Default for Inventory {
         Self {
             food: 0.0,
             wood: 0.0,
+            seeds: 0.0,
+            fiber: 0.0,
+            hides: 0.0,
+            ore: 0.0,
+            metal: 0.0,
+            clothing: 0.0,
+            weapons: 0.0,
             max_food: 3.0,
             max_wood: 3.0,
         }

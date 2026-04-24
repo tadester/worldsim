@@ -4,6 +4,7 @@ use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
 use crate::agents::inventory::Inventory;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
+use crate::agents::personality::{NpcPsyche, PersonalityType};
 use crate::agents::programs::{KnownPrograms, ProgramId};
 use crate::life::growth::Lifecycle;
 use crate::life::population::{PopulationKind, PopulationStats};
@@ -339,6 +340,7 @@ fn resolve_npc_births(
         Entity,
         &Transform,
         &Npc,
+        Option<&mut NpcPsyche>,
         &ManaReservoir,
         &ManaStorageStyle,
         Option<&KnownPrograms>,
@@ -350,7 +352,16 @@ fn resolve_npc_births(
         return;
     }
 
-    for (entity, transform, npc, reservoir, mana_style, known_programs, mut pregnancy) in &mut npcs
+    for (
+        entity,
+        transform,
+        npc,
+        mut psyche,
+        reservoir,
+        mana_style,
+        known_programs,
+        mut pregnancy,
+    ) in &mut npcs
     {
         pregnancy.gestation_days -= delta_days;
         if pregnancy.gestation_days > 0.0 {
@@ -373,6 +384,10 @@ fn resolve_npc_births(
             NpcGender::Man
         };
         let child_seed = (birth_seed % 17) as f32 / 16.0;
+        let inherited_personality = psyche
+            .as_ref()
+            .map(|psyche| psyche.personality)
+            .unwrap_or(PersonalityType::Builder);
         let mut child_programs = KnownPrograms::default();
         if let Some(parent_programs) = known_programs {
             child_programs.known.clear();
@@ -391,29 +406,40 @@ fn resolve_npc_births(
             child_programs.last_grant_reason = format!("Inherited from {}", npc.name);
         }
 
-        commands.spawn((
-            NpcBundle::new(
-                transform.translation.truncate() + offset,
-                child_name,
-                (npc.health * 0.72).clamp(34.0, 60.0),
-                ManaReservoir {
-                    capacity: reservoir.capacity,
-                    stored: (reservoir.stored * 0.35).min(reservoir.capacity),
-                    stability: reservoir.stability,
-                },
-                *mana_style,
-            )
-            .with_identity(child_sex, child_gender)
-            .with_tooling(0.1, 0.0)
-            .with_drives(
-                (npc.reproduction_drive * 0.82 + 0.25 + child_seed * 0.22).clamp(0.1, 1.6),
-                (npc.discovery_drive * 0.78 + 0.20 + child_seed * 0.18).clamp(0.1, 1.6),
-                (npc.aggression_drive * 0.72 + child_seed * 0.30).clamp(0.0, 1.6),
-                (npc.risk_tolerance * 0.80 + 0.15 + child_seed * 0.16).clamp(0.0, 1.4),
-            )
-            .with_age_days(0.0),
-            child_programs,
-        ));
+        let child_bundle = NpcBundle::new(
+            transform.translation.truncate() + offset,
+            child_name,
+            (npc.health * 0.72).clamp(34.0, 60.0),
+            ManaReservoir {
+                capacity: reservoir.capacity,
+                stored: (reservoir.stored * 0.35).min(reservoir.capacity),
+                stability: reservoir.stability,
+            },
+            *mana_style,
+        )
+        .with_identity(child_sex, child_gender)
+        .with_tooling(0.1, 0.0)
+        .with_drives(
+            (npc.reproduction_drive * 0.82 + 0.25 + child_seed * 0.22).clamp(0.1, 1.6),
+            (npc.discovery_drive * 0.78 + 0.20 + child_seed * 0.18).clamp(0.1, 1.6),
+            (npc.aggression_drive * 0.72 + child_seed * 0.30).clamp(0.0, 1.6),
+            (npc.risk_tolerance * 0.80 + 0.15 + child_seed * 0.16).clamp(0.0, 1.4),
+        )
+        .with_personality(
+            inherited_personality,
+            0.25 + child_seed * 0.55,
+            0.18 + child_seed * 0.42,
+            0.22 + child_seed * 0.50,
+            0.12 + child_seed * 0.40,
+            0.15 + child_seed * 0.48,
+            0.14 + child_seed * 0.52,
+            0.10 + child_seed * 0.38,
+        )
+        .with_age_days(0.0);
+        commands.spawn((child_bundle, child_programs));
+        if let Some(psyche) = psyche.as_mut() {
+            psyche.reward_reproduction();
+        }
         commands.entity(entity).remove::<NpcPregnancy>();
         population.record_birth(PopulationKind::Npc, step.elapsed_days);
         writer.write(LogEvent::new(

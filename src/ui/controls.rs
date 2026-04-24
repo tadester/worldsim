@@ -2,7 +2,8 @@ use bevy::prelude::*;
 
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::ui::{
-    DiagnosticsLogPane, DiagnosticsNpcDeathPane, DiagnosticsSettingsPane, GameMenuRoot,
+    DiagnosticsLogPane, DiagnosticsNpcDeathPane, DiagnosticsSettingsPane, DiagnosticsWorldLogPane,
+    DiagnosticsWorldSuggestionsPane, GameMenuRoot,
 };
 use crate::world::resources::WorldStats;
 
@@ -24,6 +25,8 @@ enum ToggleTarget {
     Settings,
     Logs,
     NpcDeaths,
+    WorldLog,
+    Wspg,
 }
 
 #[derive(Resource, Debug, Clone, Copy)]
@@ -31,6 +34,8 @@ struct DiagnosticsPanelState {
     settings_visible: bool,
     logs_visible: bool,
     npc_deaths_visible: bool,
+    world_log_visible: bool,
+    wspg_visible: bool,
 }
 
 impl Default for DiagnosticsPanelState {
@@ -38,7 +43,9 @@ impl Default for DiagnosticsPanelState {
         Self {
             settings_visible: true,
             logs_visible: true,
-            npc_deaths_visible: true,
+            npc_deaths_visible: false,
+            world_log_visible: false,
+            wspg_visible: false,
         }
     }
 }
@@ -79,7 +86,9 @@ fn spawn_game_menu_toolbar(mut commands: Commands, game_menu_root: Res<GameMenuR
             .with_children(|row| {
                 spawn_toggle_button(row, ToggleTarget::Settings, "Settings: On");
                 spawn_toggle_button(row, ToggleTarget::Logs, "Logs: On");
-                spawn_toggle_button(row, ToggleTarget::NpcDeaths, "NPC Death Log: On");
+                spawn_toggle_button(row, ToggleTarget::NpcDeaths, "NPC Death Log: Off");
+                spawn_toggle_button(row, ToggleTarget::WorldLog, "World Log: Off");
+                spawn_toggle_button(row, ToggleTarget::Wspg, "WSPG: Off");
             });
     });
 }
@@ -135,8 +144,22 @@ fn toggle_diagnostics_panels(
         (&Interaction, &mut BackgroundColor, &ToggleButton),
         (Changed<Interaction>, With<Button>),
     >,
+    keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<DiagnosticsPanelState>,
 ) {
+    if keys.just_pressed(KeyCode::KeyL) {
+        state.logs_visible = !state.logs_visible;
+    }
+    if keys.just_pressed(KeyCode::KeyK) {
+        state.npc_deaths_visible = !state.npc_deaths_visible;
+    }
+    if keys.just_pressed(KeyCode::KeyO) {
+        state.world_log_visible = !state.world_log_visible;
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        state.wspg_visible = !state.wspg_visible;
+    }
+
     for (interaction, mut background, button) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
@@ -149,6 +172,12 @@ fn toggle_diagnostics_panels(
                     }
                     ToggleTarget::NpcDeaths => {
                         state.npc_deaths_visible = !state.npc_deaths_visible;
+                    }
+                    ToggleTarget::WorldLog => {
+                        state.world_log_visible = !state.world_log_visible;
+                    }
+                    ToggleTarget::Wspg => {
+                        state.wspg_visible = !state.wspg_visible;
                     }
                 }
                 background.0 = Color::srgba(0.26, 0.32, 0.40, 0.98);
@@ -168,6 +197,8 @@ fn sync_diagnostics_panel_visibility(
     settings_pane: Res<DiagnosticsSettingsPane>,
     log_pane: Res<DiagnosticsLogPane>,
     npc_death_pane: Res<DiagnosticsNpcDeathPane>,
+    world_log_pane: Res<DiagnosticsWorldLogPane>,
+    world_suggestions_pane: Res<DiagnosticsWorldSuggestionsPane>,
     mut visibilities: Query<&mut Visibility>,
 ) {
     if !state.is_changed() {
@@ -192,6 +223,22 @@ fn sync_diagnostics_panel_visibility(
 
     if let Ok(mut visibility) = visibilities.get_mut(npc_death_pane.0) {
         *visibility = if state.npc_deaths_visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    if let Ok(mut visibility) = visibilities.get_mut(world_log_pane.0) {
+        *visibility = if state.world_log_visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    if let Ok(mut visibility) = visibilities.get_mut(world_suggestions_pane.0) {
+        *visibility = if state.wspg_visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -230,6 +277,20 @@ fn update_toggle_button_text(
                     "NPC Death Log: Off"
                 }
             }
+            ToggleTarget::WorldLog => {
+                if state.world_log_visible {
+                    "World Log: On"
+                } else {
+                    "World Log: Off"
+                }
+            }
+            ToggleTarget::Wspg => {
+                if state.wspg_visible {
+                    "WSPG: On"
+                } else {
+                    "WSPG: Off"
+                }
+            }
         };
         *text = Text::new(label);
     }
@@ -243,7 +304,7 @@ fn update_footer_text(
 ) {
     for mut text in &mut texts {
         *text = Text::new(format!(
-            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = 120x | 5 = 300x | 6 = 900x | Tab = cycle entity | Animals {} | Trees {} | NPCs {} | Predators {} | Shelters {}",
+            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = 120x | 5 = 300x | 6 = 900x | Tab = cycle entity | L logs | K deaths | O world log | P WSPG | Animals {} | Trees {} | NPCs {} | Predators {} | Shelters {}",
             step.elapsed_days,
             clock.speed_label(),
             if clock.paused { " (paused)" } else { "" },
