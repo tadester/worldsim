@@ -42,7 +42,10 @@ fn seed_world_entities(
     let mut npc_index = 0usize;
 
     for (tile, transform) in &tiles {
-        if (tile.coord.x + tile.coord.y) % 3 == 0 {
+        if (tile.coord.x + tile.coord.y) % 5 == 0
+            && tile.tree_capacity > 2.6
+            && tile.soil_fertility > 0.32
+        {
             let offset = seeded_offset(tree_index as i32, settings.tile_size * 0.2);
             let growth = match (tile.coord.x + tile.coord.y) % 7 {
                 0 => 0.95,

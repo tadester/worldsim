@@ -5,10 +5,20 @@ use crate::ui::{
     DiagnosticsLogPane, DiagnosticsNpcDeathPane, DiagnosticsSettingsPane, DiagnosticsWorldLogPane,
     DiagnosticsWorldSuggestionsPane, GameMenuRoot,
 };
+use crate::world::climate::ClimateModel;
 use crate::world::resources::WorldStats;
 
 #[derive(Component)]
 struct FooterText;
+
+#[derive(Component)]
+struct DayNightText;
+
+#[derive(Component)]
+struct DayLight;
+
+#[derive(Component)]
+struct NightLight;
 
 #[derive(Component)]
 struct ToggleButton {
@@ -55,13 +65,21 @@ pub struct ControlsUiPlugin;
 impl Plugin for ControlsUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DiagnosticsPanelState>()
-            .add_systems(PostStartup, (spawn_game_menu_toolbar, spawn_game_footer))
+            .add_systems(
+                PostStartup,
+                (
+                    spawn_game_menu_toolbar,
+                    spawn_game_footer,
+                    spawn_day_night_widget,
+                ),
+            )
             .add_systems(
                 Update,
                 (
                     toggle_diagnostics_panels,
                     sync_diagnostics_panel_visibility,
                     update_toggle_button_text,
+                    update_day_night_widget,
                     update_footer_text,
                 ),
             );
@@ -137,6 +155,64 @@ fn spawn_game_footer(mut commands: Commands) {
             TextColor(Color::srgb(0.85, 0.89, 0.94)),
             FooterText,
         ));
+}
+
+fn spawn_day_night_widget(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(14.0),
+                top: px(14.0),
+                padding: UiRect::axes(px(12.0), px(10.0)),
+                border: UiRect::all(px(1.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(8.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.06, 0.10, 0.88)),
+            BorderColor::all(Color::srgba(0.30, 0.36, 0.46, 0.85)),
+            ZIndex(16),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("Cycle"),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.95, 0.95, 0.98)),
+                DayNightText,
+            ));
+            parent
+                .spawn((
+                    Node {
+                        width: px(144.0),
+                        height: px(18.0),
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.10, 0.12, 0.18, 0.75)),
+                ))
+                .with_children(|bar| {
+                    bar.spawn((
+                        Node {
+                            width: px(54.0),
+                            height: px(12.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.95, 0.76, 0.28, 0.35)),
+                        DayLight,
+                    ));
+                    bar.spawn((
+                        Node {
+                            width: px(54.0),
+                            height: px(12.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.62, 0.70, 0.98, 0.35)),
+                        NightLight,
+                    ));
+                });
+        });
 }
 
 fn toggle_diagnostics_panels(
@@ -304,7 +380,7 @@ fn update_footer_text(
 ) {
     for mut text in &mut texts {
         *text = Text::new(format!(
-            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = 120x | 5 = 300x | 6 = 900x | Tab = cycle entity | L logs | K deaths | O world log | P WSPG | Animals {} | Trees {} | NPCs {} | Predators {} | Shelters {}",
+            "Time day {:.1} | Speed {}{} | Space pause | 1 = 1x | 2 = 5x | 3 = 20x | 4 = 120x | 5 = 300x | 6 = 900x | Click = inspect | Tab = cycle entity | L logs | K deaths | O world log | P WSPG | Animals {} | Trees {} | NPCs {} | Predators {} | Shelters {}",
             step.elapsed_days,
             clock.speed_label(),
             if clock.paused { " (paused)" } else { "" },
@@ -314,5 +390,29 @@ fn update_footer_text(
             stats.predators,
             stats.shelters,
         ));
+    }
+}
+
+fn update_day_night_widget(
+    climate: Res<ClimateModel>,
+    mut text: Query<&mut Text, With<DayNightText>>,
+    mut day: Query<&mut BackgroundColor, (With<DayLight>, Without<NightLight>)>,
+    mut night: Query<&mut BackgroundColor, (With<NightLight>, Without<DayLight>)>,
+) {
+    let sun = climate.solar_factor();
+    let moon = climate.lunar_factor();
+    for mut text in &mut text {
+        *text = Text::new(format!(
+            "{} | sun {:.0}% moon {:.0}%",
+            if sun >= moon { "Day" } else { "Night" },
+            sun * 100.0,
+            moon * 100.0
+        ));
+    }
+    for mut day in &mut day {
+        day.0 = Color::srgba(0.95, 0.76, 0.28, 0.20 + sun * 0.75);
+    }
+    for mut night in &mut night {
+        night.0 = Color::srgba(0.62, 0.70, 0.98, 0.18 + moon * 0.78);
     }
 }

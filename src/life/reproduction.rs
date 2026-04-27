@@ -65,7 +65,7 @@ fn tree_seed_spread(
             break;
         }
 
-        tree.spread_progress += delta_days * 0.0015 * biomass_ratio.max(0.25);
+        tree.spread_progress += delta_days * 0.00045 * biomass_ratio.max(0.20);
 
         if tree.spread_progress < 1.0 || biomass_ratio <= 0.25 {
             continue;
@@ -82,11 +82,11 @@ fn tree_seed_spread(
                 continue;
             }
 
-            if state.tree_biomass < 0.4 {
+            if state.tree_biomass < 0.85 || tile.tree_capacity < 2.2 {
                 break;
             }
 
-            state.tree_biomass = (state.tree_biomass - 0.35).max(0.0);
+            state.tree_biomass = (state.tree_biomass - 0.55).max(0.0);
             commands.spawn((
                 Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
                 Transform::from_xyz(spawn_position.x, spawn_position.y, 2.0),

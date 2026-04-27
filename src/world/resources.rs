@@ -4,7 +4,7 @@ use crate::agents::animal::Animal;
 use crate::agents::inventory::Inventory;
 use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
-use crate::systems::simulation::SimulationClock;
+use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::climate::RegionClimate;
 use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
@@ -57,7 +57,11 @@ pub struct ShelterStockpile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CivicStructureKind {
+    Road,
+    Plaza,
     Fence,
+    Farm,
+    Pasture,
     Workshop,
     Nursery,
     WatchPost,
@@ -69,7 +73,11 @@ pub enum CivicStructureKind {
 impl CivicStructureKind {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Road => "Road",
+            Self::Plaza => "Plaza",
             Self::Fence => "Fence",
+            Self::Farm => "Farm",
+            Self::Pasture => "Pasture",
             Self::Workshop => "Workshop",
             Self::Nursery => "Nursery",
             Self::WatchPost => "Watch Post",
@@ -84,6 +92,13 @@ impl CivicStructureKind {
 pub struct CivicStructure {
     pub kind: CivicStructureKind,
     pub progress: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct TransientEffect {
+    pub ttl: f32,
+    pub drift: Vec2,
+    pub shrink: f32,
 }
 
 impl Default for ShelterStockpile {
@@ -131,6 +146,15 @@ struct CivicStructureBody;
 #[derive(Component)]
 struct CivicStructureAccent;
 
+#[derive(Component)]
+struct CivicStructureFrame;
+
+#[derive(Component)]
+struct CivicStructureScaffold;
+
+#[derive(Component)]
+struct CivicStructureWorkGlow;
+
 #[derive(Resource, Default)]
 pub struct WorldStats {
     pub trees: usize,
@@ -176,6 +200,7 @@ impl Plugin for WorldResourcesPlugin {
                 sync_campfire_visuals,
                 attach_civic_structure_visuals,
                 sync_civic_structure_visuals,
+                animate_transient_effects,
                 burn_campfires,
                 decay_shelter_integrity,
                 regrow_region_resources,
@@ -183,6 +208,26 @@ impl Plugin for WorldResourcesPlugin {
             ),
         );
     }
+}
+
+pub fn spawn_transient_effect(
+    commands: &mut Commands,
+    position: Vec2,
+    color: Color,
+    size: Vec2,
+    drift: Vec2,
+    ttl: f32,
+    z: f32,
+) {
+    commands.spawn((
+        Sprite::from_color(color, size),
+        Transform::from_xyz(position.x, position.y, z),
+        TransientEffect {
+            ttl,
+            drift,
+            shrink: 0.992,
+        },
+    ));
 }
 
 fn attach_shelter_stockpiles(
@@ -266,6 +311,21 @@ fn attach_civic_structure_visuals(
                 Sprite::from_color(civic_structure_accent_color(structure.kind), accent_size),
                 Transform::from_xyz(0.0, body_size.y * 0.35, 0.2),
                 CivicStructureAccent,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.70, 0.52, 0.26, 0.85), body_size * 0.82),
+                Transform::from_xyz(0.0, 0.0, 0.28),
+                CivicStructureFrame,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.86, 0.76, 0.46, 0.60), Vec2::new(body_size.x, 3.0)),
+                Transform::from_xyz(0.0, body_size.y * 0.12, 0.3),
+                CivicStructureScaffold,
+            ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.98, 0.86, 0.42, 0.0), Vec2::new(body_size.x * 0.28, 4.0)),
+                Transform::from_xyz(-body_size.x * 0.28, -body_size.y * 0.10, 0.34),
+                CivicStructureWorkGlow,
             ));
         });
     }
@@ -399,15 +459,56 @@ fn sync_campfire_visuals(
 }
 
 fn sync_civic_structure_visuals(
-    structures: Query<
-        (&CivicStructure, &Children),
-        Or<(Changed<CivicStructure>, Added<CivicStructure>)>,
-    >,
+    step: Res<SimulationStep>,
+    structures: Query<(&CivicStructure, &Children)>,
     mut bodies: Query<&mut Sprite, With<CivicStructureBody>>,
-    mut accents: Query<&mut Sprite, (With<CivicStructureAccent>, Without<CivicStructureBody>)>,
+    mut accents: Query<
+        &mut Sprite,
+        (
+            With<CivicStructureAccent>,
+            Without<CivicStructureBody>,
+            Without<CivicStructureFrame>,
+            Without<CivicStructureScaffold>,
+        ),
+    >,
+    mut frames: Query<
+        &mut Sprite,
+        (
+            With<CivicStructureFrame>,
+            Without<CivicStructureBody>,
+            Without<CivicStructureAccent>,
+            Without<CivicStructureScaffold>,
+        ),
+    >,
+    mut scaffolds: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<CivicStructureScaffold>,
+            Without<CivicStructureBody>,
+            Without<CivicStructureAccent>,
+            Without<CivicStructureFrame>,
+        ),
+    >,
+    mut work_glows: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<CivicStructureWorkGlow>,
+            Without<CivicStructureBody>,
+            Without<CivicStructureAccent>,
+            Without<CivicStructureFrame>,
+            Without<CivicStructureScaffold>,
+        ),
+    >,
 ) {
+    let phase = step.elapsed_days * 18.0;
     for (structure, children) in &structures {
         let completion = structure.progress.clamp(0.0, 1.0);
+        let scaffold_alpha = (1.0 - completion).clamp(0.0, 1.0);
+        let work_alpha = if completion < 1.0 {
+            0.18 + ((phase + completion * 2.0).sin() * 0.5 + 0.5) * 0.42
+        } else {
+            0.0
+        };
         for child in children.iter() {
             if let Ok(mut sprite) = bodies.get_mut(child) {
                 sprite.color =
@@ -417,6 +518,41 @@ fn sync_civic_structure_visuals(
                 sprite.color = civic_structure_accent_color(structure.kind)
                     .with_alpha(0.25 + completion * 0.75);
             }
+            if let Ok(mut sprite) = frames.get_mut(child) {
+                sprite.color = Color::srgba(0.70, 0.52, 0.26, 0.10 + scaffold_alpha * 0.82);
+            }
+            if let Ok((mut sprite, mut transform)) = scaffolds.get_mut(child) {
+                sprite.color = Color::srgba(0.86, 0.76, 0.46, scaffold_alpha * 0.72);
+                transform.translation.y = (phase + completion * 9.0).sin() * 0.8;
+            }
+            if let Ok((mut sprite, mut transform)) = work_glows.get_mut(child) {
+                sprite.color = Color::srgba(0.98, 0.86, 0.42, work_alpha * scaffold_alpha);
+                transform.translation.x = -10.0 + ((phase * 1.8).sin() * 0.5 + 0.5) * 20.0;
+                transform.translation.y = -2.0 + (phase * 2.2).cos() * 1.6;
+                transform.scale = Vec3::new(0.8 + scaffold_alpha * 0.4, 1.0, 1.0);
+            }
+        }
+    }
+}
+
+fn animate_transient_effects(
+    mut commands: Commands,
+    clock: Res<SimulationClock>,
+    mut effects: Query<(Entity, &mut TransientEffect, &mut Transform, &mut Sprite)>,
+) {
+    let dt = clock.delta_seconds();
+    if dt <= 0.0 {
+        return;
+    }
+
+    for (entity, mut effect, mut transform, mut sprite) in &mut effects {
+        effect.ttl -= dt;
+        transform.translation.x += effect.drift.x * dt;
+        transform.translation.y += effect.drift.y * dt;
+        transform.scale *= effect.shrink;
+        sprite.color = sprite.color.with_alpha((effect.ttl * 5.0).clamp(0.0, 0.95));
+        if effect.ttl <= 0.0 {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -476,13 +612,13 @@ fn regrow_region_resources(
 
     for (tile, climate, mut state) in &mut regions {
         let suitability = (1.0 - climate.pressure * 0.75).clamp(0.15, 1.0);
-        let forage_growth = (0.16 + tile.soil_fertility * 0.20 + tile.temperature * 0.04)
+        let forage_growth = (0.08 + tile.soil_fertility * 0.10 + tile.temperature * 0.02)
             * suitability
             * resource_bias
             * delta_days;
-        let biomass_growth = (0.08 + tile.soil_fertility * 0.12 + tile.mana_density * 0.04)
-            * (0.55 + suitability * 0.45)
-            * (0.88 + resource_bias * 0.12)
+        let biomass_growth = (0.018 + tile.soil_fertility * 0.028 + tile.mana_density * 0.010)
+            * (0.48 + suitability * 0.30)
+            * (0.78 + resource_bias * 0.08)
             * delta_days;
 
         state.forage = (state.forage + forage_growth).clamp(0.0, state.forage_capacity);
@@ -573,7 +709,11 @@ fn update_world_stats(
 
 fn civic_structure_sizes(kind: CivicStructureKind) -> (Vec2, Vec2) {
     match kind {
+        CivicStructureKind::Road => (Vec2::new(54.0, 6.0), Vec2::new(10.0, 2.0)),
+        CivicStructureKind::Plaza => (Vec2::new(42.0, 42.0), Vec2::new(18.0, 18.0)),
         CivicStructureKind::Fence => (Vec2::new(38.0, 4.0), Vec2::new(4.0, 12.0)),
+        CivicStructureKind::Farm => (Vec2::new(34.0, 28.0), Vec2::new(28.0, 4.0)),
+        CivicStructureKind::Pasture => (Vec2::new(38.0, 30.0), Vec2::new(30.0, 5.0)),
         CivicStructureKind::Workshop => (Vec2::new(24.0, 16.0), Vec2::new(18.0, 5.0)),
         CivicStructureKind::Nursery => (Vec2::new(22.0, 14.0), Vec2::new(10.0, 7.0)),
         CivicStructureKind::WatchPost => (Vec2::new(10.0, 30.0), Vec2::new(18.0, 5.0)),
@@ -585,7 +725,11 @@ fn civic_structure_sizes(kind: CivicStructureKind) -> (Vec2, Vec2) {
 
 fn civic_structure_color(kind: CivicStructureKind) -> Color {
     match kind {
+        CivicStructureKind::Road => Color::srgb(0.47, 0.39, 0.29),
+        CivicStructureKind::Plaza => Color::srgb(0.54, 0.51, 0.44),
         CivicStructureKind::Fence => Color::srgb(0.45, 0.30, 0.16),
+        CivicStructureKind::Farm => Color::srgb(0.42, 0.34, 0.16),
+        CivicStructureKind::Pasture => Color::srgb(0.30, 0.42, 0.18),
         CivicStructureKind::Workshop => Color::srgb(0.38, 0.34, 0.28),
         CivicStructureKind::Nursery => Color::srgb(0.50, 0.42, 0.30),
         CivicStructureKind::WatchPost => Color::srgb(0.33, 0.25, 0.18),
@@ -597,7 +741,11 @@ fn civic_structure_color(kind: CivicStructureKind) -> Color {
 
 fn civic_structure_accent_color(kind: CivicStructureKind) -> Color {
     match kind {
+        CivicStructureKind::Road => Color::srgb(0.66, 0.59, 0.46),
+        CivicStructureKind::Plaza => Color::srgb(0.78, 0.74, 0.62),
         CivicStructureKind::Fence => Color::srgb(0.65, 0.45, 0.25),
+        CivicStructureKind::Farm => Color::srgb(0.66, 0.74, 0.28),
+        CivicStructureKind::Pasture => Color::srgb(0.76, 0.68, 0.30),
         CivicStructureKind::Workshop => Color::srgb(0.56, 0.48, 0.36),
         CivicStructureKind::Nursery => Color::srgb(0.72, 0.60, 0.42),
         CivicStructureKind::WatchPost => Color::srgb(0.70, 0.58, 0.36),

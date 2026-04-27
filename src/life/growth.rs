@@ -70,14 +70,14 @@ fn grow_trees(
                 continue;
             }
 
-            let consumed = (delta_days * 0.0012).min(state.tree_biomass);
+            let consumed = (delta_days * 0.00045).min(state.tree_biomass);
             state.tree_biomass -= consumed;
             local_growth_factor =
-                (consumed / (delta_days * 0.0012).max(f32::EPSILON)).clamp(0.1, 1.5);
+                (consumed / (delta_days * 0.00045).max(f32::EPSILON)).clamp(0.08, 1.15);
             break;
         }
 
-        tree.growth += delta_days * 0.0009 * local_growth_factor;
+        tree.growth += delta_days * 0.00032 * local_growth_factor;
 
         if tree.growth >= 0.9 {
             tree.stage = TreeStage::Mature;

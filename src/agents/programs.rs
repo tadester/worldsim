@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
+use crate::agents::animal::AnimalBundle;
 use crate::agents::decisions::NpcIntent;
+use crate::agents::inventory::Inventory;
 use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
 use crate::agents::personality::PersonalityType;
 use crate::agents::society::FactionSociety;
@@ -12,7 +14,10 @@ use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::proposals::{WorldActionLog, push_world_action};
-use crate::world::resources::{CivicStructure, CivicStructureKind, Shelter, WorldStats};
+use crate::world::resources::{
+    spawn_transient_effect, CivicStructure, CivicStructureKind, Shelter, ShelterStockpile,
+    WorldStats,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProgramId {
@@ -218,6 +223,7 @@ impl Plugin for ProgramPlugin {
                     world_grant_emergency_programs,
                     world_spawn_rescue_settlers.after(world_grant_emergency_programs),
                     build_society_projects,
+                    advance_civic_projects.after(build_society_projects),
                     apply_known_program_effects,
                     materialize_resource_chains.after(apply_known_program_effects),
                 ),
@@ -287,7 +293,10 @@ fn npc_self_discover_programs(
 
     for (entity, npc, needs, inventory, mut programs) in &mut npcs {
         let seed = ((entity.to_bits() ^ step.tick) % 997) as f32 / 997.0;
-        let discovery = npc.discovery_drive * needs.curiosity * delta_days * 0.18;
+        let discovery = npc.discovery_drive
+            * (needs.curiosity + (1.0 - needs.safety) * 0.35 + npc.exposure * 0.45)
+            * delta_days
+            * 0.42;
 
         let candidates = [
             (
@@ -636,6 +645,7 @@ fn build_society_projects(
     mut commands: Commands,
     step: Res<SimulationStep>,
     stats: Res<WorldStats>,
+    deaths: Res<NpcDeathLog>,
     mut society: ResMut<SocietyProgress>,
     mut world_actions: ResMut<WorldActionLog>,
     mut writer: MessageWriter<LogEvent>,
@@ -643,20 +653,33 @@ fn build_society_projects(
         (
             &Transform,
             &KnownPrograms,
+            &crate::magic::storage::ManaPractice,
             &mut NpcHome,
+            &mut Inventory,
             Option<&mut crate::agents::personality::NpcPsyche>,
             Option<&crate::agents::factions::FactionMember>,
         ),
         With<Npc>,
     >,
-    shelters: Query<
-        (
-            Entity,
-            &Transform,
-            Option<&crate::agents::factions::FactionMember>,
-        ),
-        With<Shelter>,
-    >,
+    mut shelters: ParamSet<(
+        Query<
+            (
+                Entity,
+                &Transform,
+                Option<&crate::agents::factions::FactionMember>,
+            ),
+            With<Shelter>,
+        >,
+        Query<
+            (
+                Entity,
+                &Transform,
+                Option<&crate::agents::factions::FactionMember>,
+                &mut ShelterStockpile,
+            ),
+            With<Shelter>,
+        >,
+    )>,
     structures: Query<&CivicStructure>,
     faction_societies: Query<&FactionSociety>,
 ) {
@@ -664,6 +687,7 @@ fn build_society_projects(
         settlement_stage(stats.npcs, stats.shelters, stats.civic_structures).to_string();
 
     let shelter_positions = shelters
+        .p0()
         .iter()
         .map(|(entity, transform, faction)| {
             (
@@ -677,7 +701,7 @@ fn build_society_projects(
         return;
     }
 
-    for (transform, _, mut home, _, member) in &mut npcs {
+    for (transform, _, _, mut home, _, _, member) in &mut npcs {
         if home.shelter.is_some() {
             continue;
         }
@@ -697,44 +721,123 @@ fn build_society_projects(
         return;
     }
 
-    let known_any =
-        |program: ProgramId| npcs.iter().any(|(_, known, _, _, _)| known.knows(program));
+    let known_any = |program: ProgramId| {
+        npcs.iter().any(|(_, known, _, _, _, _, _)| known.knows(program))
+    };
     let existing =
         |kind: CivicStructureKind| structures.iter().any(|structure| structure.kind == kind);
     let society_ready = faction_societies
         .iter()
         .any(|faction| faction.settlement_drive > 0.40 && faction.cohesion > 0.36);
+    let recent_predator_deaths = deaths
+        .entries
+        .iter()
+        .rev()
+        .take_while(|entry| step.elapsed_days - entry.day <= 28.0)
+        .filter(|entry| entry.reason.contains("predator") || entry.reason.contains("mauled"))
+        .count();
+    let urgent_defense = recent_predator_deaths >= 2 || stats.predators >= (stats.npcs / 2).max(2);
+    let (telekinesis_bias, hearth_bias, warding_bias, hunt_bias, verdant_bias) = npcs.iter().fold(
+        (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32),
+        |acc, (_, _, practice, _, _, _, _)| {
+            (
+                acc.0 + practice.telekinesis,
+                acc.1 + practice.hearthspark,
+                acc.2 + practice.warding,
+                acc.3 + practice.hunter_focus,
+                acc.4 + practice.verdant_touch,
+            )
+        },
+    );
     let center = shelter_positions
         .iter()
         .fold(Vec2::ZERO, |sum, (_, pos, _)| sum + *pos)
         / shelter_positions.len().max(1) as f32;
+    let layout_push = 12.0 + telekinesis_bias * 1.2;
+    let defense_ring = 44.0 + warding_bias * 2.4 + hunt_bias * 2.0;
+    let farm_reach = 50.0 + verdant_bias * 2.6;
+    let forge_pull = 34.0 + hearth_bias * 2.2;
 
     let next_project = if !society_ready {
         None
+    } else if urgent_defense
+        && stats.shelters >= 2
+        && known_any(ProgramId::Woodworking)
+        && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
+        && !existing(CivicStructureKind::Fence)
+    {
+        Some((CivicStructureKind::Fence, center + Vec2::new(0.0, -defense_ring)))
+    } else if urgent_defense
+        && stats.npcs >= 4
+        && known_any(ProgramId::Watchkeeping)
+        && stats.total_wood_carried + stats.total_wood_stockpiled > 2.6
+        && !existing(CivicStructureKind::WatchPost)
+    {
+        Some((CivicStructureKind::WatchPost, center + Vec2::new(layout_push * 0.25, defense_ring + 6.0)))
+    } else if stats.shelters >= 3
+        && !existing(CivicStructureKind::Plaza)
+        && faction_societies
+            .iter()
+            .any(|society| society.cohesion > 0.40)
+    {
+        Some((CivicStructureKind::Plaza, center))
+    } else if stats.shelters >= 3
+        && !existing(CivicStructureKind::Road)
+        && faction_societies
+            .iter()
+            .any(|society| society.settlement_drive > 0.45)
+    {
+        Some((CivicStructureKind::Road, center + Vec2::new(0.0, -22.0 - telekinesis_bias.min(10.0))))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Woodworking)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
         && !existing(CivicStructureKind::Fence)
     {
-        Some((CivicStructureKind::Fence, center + Vec2::new(0.0, -42.0)))
+        Some((CivicStructureKind::Fence, center + Vec2::new(0.0, -defense_ring)))
+    } else if stats.shelters >= 2
+        && known_any(ProgramId::Agriculture)
+        && verdant_bias > 0.7
+        && stats.total_food_stockpiled + stats.total_food_carried > 1.8
+        && !existing(CivicStructureKind::Farm)
+    {
+        Some((CivicStructureKind::Farm, center + Vec2::new(-farm_reach, 26.0)))
+    } else if stats.shelters >= 2
+        && known_any(ProgramId::Agriculture)
+        && stats.total_food_stockpiled + stats.total_food_carried > 2.0
+        && !existing(CivicStructureKind::Farm)
+    {
+        Some((CivicStructureKind::Farm, center + Vec2::new(-farm_reach, 26.0)))
+    } else if stats.shelters >= 2
+        && known_any(ProgramId::AnimalHusbandry)
+        && stats.animals >= 2
+        && !existing(CivicStructureKind::Pasture)
+    {
+        Some((CivicStructureKind::Pasture, center + Vec2::new(farm_reach + 2.0, 28.0)))
+    } else if stats.shelters >= 2
+        && known_any(ProgramId::Toolmaking)
+        && (telekinesis_bias > 0.65 || hearth_bias > 0.65)
+        && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
+        && !existing(CivicStructureKind::Workshop)
+    {
+        Some((CivicStructureKind::Workshop, center + Vec2::new(forge_pull, 10.0)))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Toolmaking)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 3.2
         && !existing(CivicStructureKind::Workshop)
     {
-        Some((CivicStructureKind::Workshop, center + Vec2::new(38.0, 8.0)))
+        Some((CivicStructureKind::Workshop, center + Vec2::new(forge_pull, 8.0)))
     } else if stats.npcs >= 4
         && known_any(ProgramId::Childcare)
         && stats.total_food_stockpiled + stats.total_food_carried > 2.4
         && !existing(CivicStructureKind::Nursery)
     {
-        Some((CivicStructureKind::Nursery, center + Vec2::new(-36.0, 10.0)))
+        Some((CivicStructureKind::Nursery, center + Vec2::new(-28.0 + warding_bias * 0.8, 10.0)))
     } else if stats.npcs >= 4
         && known_any(ProgramId::Watchkeeping)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.6
         && !existing(CivicStructureKind::WatchPost)
     {
-        Some((CivicStructureKind::WatchPost, center + Vec2::new(0.0, 46.0)))
+        Some((CivicStructureKind::WatchPost, center + Vec2::new(layout_push * 0.25, defense_ring + 6.0)))
     } else if stats.shelters >= 3
         && known_any(ProgramId::FoodStorage)
         && stats.total_food_stockpiled + stats.total_food_carried > 4.2
@@ -750,7 +853,7 @@ fn build_society_projects(
         && stats.total_ore > 1.6
         && !existing(CivicStructureKind::Forge)
     {
-        Some((CivicStructureKind::Forge, center + Vec2::new(44.0, -18.0)))
+        Some((CivicStructureKind::Forge, center + Vec2::new(forge_pull + 10.0, -18.0 - hearth_bias)))
     } else if stats.shelters >= 5
         && known_any(ProgramId::Governance)
         && faction_societies.iter().any(|society| {
@@ -763,31 +866,75 @@ fn build_society_projects(
         })
         && !existing(CivicStructureKind::TownHall)
     {
-        Some((CivicStructureKind::TownHall, center + Vec2::new(0.0, 0.0)))
+        Some((CivicStructureKind::TownHall, center + Vec2::new(telekinesis_bias * 0.5, 0.0)))
     } else {
         None
     };
 
     let Some((kind, position)) = next_project else {
+        if stats.npcs > stats.shelters.saturating_mul(2)
+            && stats.total_wood_carried + stats.total_wood_stockpiled > 1.8
+            && spend_project_resources(&mut shelters, &mut npcs, 1.2, 0.0, 0.0, 0.0, 0.0, 0.0)
+        {
+            let shelter_index = stats.shelters as f32;
+            let angle = shelter_index * 0.92 + step.elapsed_days * 0.01;
+            let radius = 48.0 + (shelter_index % 4.0) * 16.0;
+            let shelter_pos = center + Vec2::new(angle.cos(), angle.sin()) * radius;
+            commands.spawn((
+                Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
+                Transform::from_xyz(shelter_pos.x, shelter_pos.y, 1.8),
+                Shelter {
+                    integrity: 1.0,
+                    safety_bonus: 0.25,
+                    insulation: 0.42,
+                },
+                ShelterStockpile::default(),
+            ));
+            society.last_project_day = step.elapsed_days;
+            society.last_project = "Clustered shelter".to_string();
+            push_world_action(
+                &mut world_actions,
+                step.elapsed_days,
+                "Housing cluster expanded",
+                "The settlement added another visible home near the village center",
+            );
+            writer.write(LogEvent::new(
+                LogEventKind::Construction,
+                "The settlement expanded with another clustered shelter".to_string(),
+            ));
+        }
         return;
     };
+    let (wood_cost, food_cost, ore_cost, metal_cost, fiber_cost, hides_cost) = project_cost(kind);
+    if !spend_project_resources(
+        &mut shelters,
+        &mut npcs,
+        wood_cost,
+        food_cost,
+        ore_cost,
+        metal_cost,
+        fiber_cost,
+        hides_cost,
+    ) {
+        return;
+    }
 
     commands.spawn((
         Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(1.0)),
-        Transform::from_xyz(position.x, position.y, 1.9),
+        Transform::from_xyz(position.x, position.y, 1.9).with_rotation(project_rotation(kind)),
         CivicStructure {
             kind,
-            progress: 1.0,
+            progress: 0.18,
         },
     ));
     society.last_project_day = step.elapsed_days;
-    society.last_project = kind.label().to_string();
-    for (_, _, _, psyche, _) in &mut npcs {
+    society.last_project = format!("Planning {}", kind.label());
+    for (_, _, _, _, _, psyche, _) in &mut npcs {
         if let Some(mut psyche) = psyche {
             let bonus = match psyche.personality {
                 PersonalityType::Builder => 0.10,
                 PersonalityType::Caregiver => {
-                    if kind == CivicStructureKind::Nursery {
+                    if matches!(kind, CivicStructureKind::Nursery | CivicStructureKind::Farm) {
                         0.12
                     } else {
                         0.05
@@ -801,7 +948,12 @@ fn build_society_projects(
                     }
                 }
                 PersonalityType::Scholar => {
-                    if kind == CivicStructureKind::Workshop || kind == CivicStructureKind::Forge {
+                    if matches!(
+                        kind,
+                        CivicStructureKind::Workshop
+                            | CivicStructureKind::Forge
+                            | CivicStructureKind::Farm
+                    ) {
                         0.09
                     } else {
                         0.04
@@ -828,13 +980,340 @@ fn build_society_projects(
     push_world_action(
         &mut world_actions,
         step.elapsed_days,
-        "Civic project completed",
-        format!("Built a {} during {} stage", kind.label(), society.stage),
+        "Civic project started",
+        format!(
+            "Started a {} during {} stage using W {:.1} F {:.1} O {:.1} M {:.1}",
+            kind.label(),
+            society.stage,
+            wood_cost,
+            food_cost,
+            ore_cost,
+            metal_cost
+        ),
     );
     writer.write(LogEvent::new(
         LogEventKind::Construction,
-        format!("The settlement built a {}", kind.label()),
+        format!("The settlement began building a {}", kind.label()),
     ));
+}
+
+fn advance_civic_projects(
+    mut commands: Commands,
+    clock: Res<SimulationClock>,
+    mut writer: MessageWriter<LogEvent>,
+    npcs: Query<
+        (
+            &Transform,
+            &Npc,
+            &crate::magic::storage::ManaPractice,
+            Option<&crate::agents::factions::FactionMember>,
+        ),
+        With<Npc>,
+    >,
+    animals: Query<Entity, With<crate::agents::animal::Animal>>,
+    mut structures: Query<(
+        Entity,
+        &mut CivicStructure,
+        &Transform,
+        Option<&crate::agents::factions::FactionMember>,
+    )>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    let mana_workers = npcs
+        .iter()
+        .map(|(transform, _, practice, member)| {
+            (
+                transform.translation.truncate(),
+                practice.telekinesis + practice.hearthspark * 0.35,
+                practice.warding,
+                member.map(|member| member.faction),
+            )
+        })
+        .collect::<Vec<_>>();
+    let npc_snapshots = npcs
+        .iter()
+        .map(|(transform, npc, _, member)| {
+            (
+                transform.translation.truncate(),
+                npc.discovery_drive,
+                npc.tool_knowledge,
+                member.map(|member| member.faction),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for (entity, mut structure, transform, member) in &mut structures {
+        if structure.progress >= 1.0 {
+            continue;
+        }
+        let pos = transform.translation.truncate();
+        let faction = member.map(|member| member.faction);
+        let workers = npc_snapshots
+            .iter()
+            .filter(|(npc_pos, _, _, npc_faction)| {
+                pos.distance(*npc_pos) < 96.0
+                    && (faction.is_none() || *npc_faction == faction || npc_faction.is_none())
+            })
+            .count() as f32;
+        let curiosity = npc_snapshots
+            .iter()
+            .filter(|(npc_pos, _, _, npc_faction)| {
+                pos.distance(*npc_pos) < 96.0
+                    && (faction.is_none() || *npc_faction == faction || npc_faction.is_none())
+            })
+            .map(|(_, discovery, _, _)| *discovery)
+            .sum::<f32>();
+        let tools = npc_snapshots
+            .iter()
+            .filter(|(npc_pos, _, _, npc_faction)| {
+                pos.distance(*npc_pos) < 96.0
+                    && (faction.is_none() || *npc_faction == faction || npc_faction.is_none())
+            })
+            .map(|(_, _, tools, _)| *tools)
+            .sum::<f32>();
+        let mana_support = mana_workers
+            .iter()
+            .filter(|(npc_pos, _, _, npc_faction)| {
+                pos.distance(*npc_pos) < 96.0
+                    && (faction.is_none() || *npc_faction == faction || npc_faction.is_none())
+            })
+            .map(|(_, telekinesis, warding, _)| *telekinesis * 0.8 + *warding * 0.3)
+            .sum::<f32>();
+        let progress_gain =
+            (0.03 + workers * 0.018 + curiosity * 0.006 + tools * 0.004 + mana_support * 0.010)
+                * delta_days;
+        let before = structure.progress;
+        if progress_gain > 0.001 && workers > 0.0 {
+            for (idx, (worker_pos, _, _, npc_faction)) in npc_snapshots
+                .iter()
+                .filter(|(npc_pos, _, _, worker_faction)| {
+                    pos.distance(*npc_pos) < 64.0
+                        && (faction.is_none() || *worker_faction == faction || worker_faction.is_none())
+                })
+                .take(3)
+                .enumerate()
+            {
+                let _ = npc_faction;
+                let material_color = match structure.kind {
+                    CivicStructureKind::Farm | CivicStructureKind::Pasture => {
+                        Color::srgba(0.72, 0.86, 0.38, 0.64)
+                    }
+                    CivicStructureKind::Forge | CivicStructureKind::Workshop => {
+                        Color::srgba(0.82, 0.64, 0.36, 0.66)
+                    }
+                    _ => Color::srgba(0.90, 0.78, 0.48, 0.62),
+                };
+                let midpoint = worker_pos.lerp(pos, 0.42 + idx as f32 * 0.10);
+                spawn_transient_effect(
+                    &mut commands,
+                    midpoint,
+                    material_color,
+                    Vec2::new(6.0, 3.5),
+                    (pos - *worker_pos).normalize_or_zero() * 10.0,
+                    0.22,
+                    5.9,
+                );
+            }
+        }
+        structure.progress = (structure.progress + progress_gain).clamp(0.0, 1.0);
+        if before < 1.0 && structure.progress >= 1.0 {
+            if structure.kind == CivicStructureKind::Pasture && animals.iter().count() < 20 {
+                for idx in 0..2 {
+                    let offset = Vec2::new(
+                        if idx == 0 { -8.0 } else { 9.0 },
+                        if idx == 0 { -4.0 } else { 6.0 },
+                    );
+                    commands.spawn(
+                        AnimalBundle::new(pos + offset, 26.0, 0.78)
+                            .with_age_days(240.0 + idx as f32 * 70.0),
+                    );
+                }
+            }
+            writer.write(LogEvent::new(
+                LogEventKind::Construction,
+                format!("The settlement finished a {}", structure.kind.label()),
+            ));
+        } else if structure.progress > before + 0.10 {
+            writer.write(LogEvent::new(
+                LogEventKind::Construction,
+                format!(
+                    "Work advanced on the {} ({:.0}%)",
+                    structure.kind.label(),
+                    structure.progress * 100.0
+                ),
+            ));
+        }
+        if structure.progress <= 0.02 {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn project_cost(kind: CivicStructureKind) -> (f32, f32, f32, f32, f32, f32) {
+    match kind {
+        CivicStructureKind::Road => (0.8, 0.0, 0.0, 0.0, 0.0, 0.0),
+        CivicStructureKind::Plaza => (1.4, 0.2, 0.0, 0.2, 0.0, 0.0),
+        CivicStructureKind::Fence => (1.8, 0.0, 0.0, 0.0, 0.0, 0.0),
+        CivicStructureKind::Farm => (1.5, 0.6, 0.0, 0.0, 0.4, 0.0),
+        CivicStructureKind::Pasture => (1.7, 0.8, 0.0, 0.0, 0.2, 0.4),
+        CivicStructureKind::Workshop => (2.4, 0.2, 0.0, 0.0, 0.0, 0.0),
+        CivicStructureKind::Nursery => (1.6, 1.0, 0.0, 0.0, 0.4, 0.0),
+        CivicStructureKind::WatchPost => (2.2, 0.2, 0.0, 0.2, 0.0, 0.0),
+        CivicStructureKind::Granary => (2.6, 1.4, 0.0, 0.0, 0.0, 0.0),
+        CivicStructureKind::Forge => (1.8, 0.4, 1.0, 0.8, 0.0, 0.0),
+        CivicStructureKind::TownHall => (3.4, 1.2, 0.8, 0.8, 0.6, 0.0),
+    }
+}
+
+fn project_rotation(kind: CivicStructureKind) -> Quat {
+    match kind {
+        CivicStructureKind::Road => Quat::from_rotation_z(0.0),
+        CivicStructureKind::Fence => Quat::from_rotation_z(0.0),
+        CivicStructureKind::Farm => Quat::from_rotation_z(0.04),
+        CivicStructureKind::Pasture => Quat::from_rotation_z(-0.03),
+        CivicStructureKind::WatchPost => Quat::from_rotation_z(0.02),
+        _ => Quat::IDENTITY,
+    }
+}
+
+fn spend_project_resources(
+    shelters: &mut ParamSet<(
+        Query<
+            (
+                Entity,
+                &Transform,
+                Option<&crate::agents::factions::FactionMember>,
+            ),
+            With<Shelter>,
+        >,
+        Query<
+            (
+                Entity,
+                &Transform,
+                Option<&crate::agents::factions::FactionMember>,
+                &mut ShelterStockpile,
+            ),
+            With<Shelter>,
+        >,
+    )>,
+    npcs: &mut Query<
+        (
+            &Transform,
+            &KnownPrograms,
+            &crate::magic::storage::ManaPractice,
+            &mut NpcHome,
+            &mut Inventory,
+            Option<&mut crate::agents::personality::NpcPsyche>,
+            Option<&crate::agents::factions::FactionMember>,
+        ),
+        With<Npc>,
+    >,
+    wood_cost: f32,
+    food_cost: f32,
+    ore_cost: f32,
+    metal_cost: f32,
+    fiber_cost: f32,
+    hides_cost: f32,
+) -> bool {
+    let total_wood = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.wood)
+        .sum::<f32>()
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.wood)
+            .sum::<f32>();
+    let total_food = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.food)
+        .sum::<f32>()
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.food)
+            .sum::<f32>();
+    let total_ore = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.ore)
+        .sum::<f32>()
+        + npcs.iter().map(|(_, _, _, _, inv, _, _)| inv.ore).sum::<f32>();
+    let total_metal = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.metal)
+        .sum::<f32>()
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.metal)
+            .sum::<f32>();
+    let total_fiber = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.fiber)
+        .sum::<f32>()
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.fiber)
+            .sum::<f32>();
+    let total_hides = shelters
+        .p1()
+        .iter()
+        .map(|(_, _, _, pile)| pile.hides)
+        .sum::<f32>()
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.hides)
+            .sum::<f32>();
+    if total_wood + 0.001 < wood_cost
+        || total_food + 0.001 < food_cost
+        || total_ore + 0.001 < ore_cost
+        || total_metal + 0.001 < metal_cost
+        || total_fiber + 0.001 < fiber_cost
+        || total_hides + 0.001 < hides_cost
+    {
+        return false;
+    }
+
+    let mut remaining_wood = wood_cost;
+    let mut remaining_food = food_cost;
+    let mut remaining_ore = ore_cost;
+    let mut remaining_metal = metal_cost;
+    let mut remaining_fiber = fiber_cost;
+    let mut remaining_hides = hides_cost;
+    {
+        for (_, _, _, mut pile) in &mut shelters.p1() {
+            drain_resource(&mut pile.wood, &mut remaining_wood);
+            drain_resource(&mut pile.food, &mut remaining_food);
+            drain_resource(&mut pile.ore, &mut remaining_ore);
+            drain_resource(&mut pile.metal, &mut remaining_metal);
+            drain_resource(&mut pile.fiber, &mut remaining_fiber);
+            drain_resource(&mut pile.hides, &mut remaining_hides);
+        }
+    }
+    for (_, _, _, _, mut inventory, _, _) in npcs.iter_mut() {
+        drain_resource(&mut inventory.wood, &mut remaining_wood);
+        drain_resource(&mut inventory.food, &mut remaining_food);
+        drain_resource(&mut inventory.ore, &mut remaining_ore);
+        drain_resource(&mut inventory.metal, &mut remaining_metal);
+        drain_resource(&mut inventory.fiber, &mut remaining_fiber);
+        drain_resource(&mut inventory.hides, &mut remaining_hides);
+    }
+    true
+}
+
+fn drain_resource(store: &mut f32, remaining: &mut f32) {
+    if *remaining <= 0.0 || *store <= 0.0 {
+        return;
+    }
+    let used = store.min(*remaining);
+    *store -= used;
+    *remaining -= used;
 }
 
 fn settlement_stage(npcs: usize, shelters: usize, civic_structures: usize) -> &'static str {

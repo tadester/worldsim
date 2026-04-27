@@ -9,6 +9,7 @@ use crate::agents::relationships::Relationships;
 use crate::life::growth::Lifecycle;
 use crate::magic::mana::ManaReservoir;
 use crate::magic::storage::{ManaPractice, ManaStorageStyle};
+use crate::systems::simulation::SimulationStep;
 
 #[derive(Component)]
 struct NpcTorso;
@@ -21,6 +22,12 @@ struct NpcLeg;
 
 #[derive(Component)]
 struct NpcAura;
+
+#[derive(Component)]
+struct NpcCloak;
+
+#[derive(Component)]
+struct NpcHandItem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NpcSex {
@@ -77,6 +84,21 @@ pub struct NpcHome {
     pub shelter: Option<Entity>,
 }
 
+#[derive(Component, Debug, Clone)]
+pub struct NpcCondition {
+    pub last_damage_reason: String,
+    pub last_damage_day: f32,
+}
+
+impl Default for NpcCondition {
+    fn default() -> Self {
+        Self {
+            last_damage_reason: "none".to_string(),
+            last_damage_day: -999.0,
+        }
+    }
+}
+
 #[derive(Bundle)]
 pub struct NpcBundle {
     pub sprite: Sprite,
@@ -88,6 +110,7 @@ pub struct NpcBundle {
     pub relationships: Relationships,
     pub intent: NpcIntent,
     pub home: NpcHome,
+    pub condition: NpcCondition,
     pub inventory: Inventory,
     pub psyche: NpcPsyche,
     pub mana_reservoir: ManaReservoir,
@@ -134,6 +157,7 @@ impl NpcBundle {
             relationships: Relationships::default(),
             intent: NpcIntent::default(),
             home: NpcHome::default(),
+            condition: NpcCondition::default(),
             inventory: Inventory::default(),
             psyche: NpcPsyche::default(),
             mana_reservoir,
@@ -223,6 +247,11 @@ fn attach_npc_visuals(mut commands: Commands, npcs: Query<Entity, Added<Npc>>) {
     for entity in &npcs {
         commands.entity(entity).with_children(|parent| {
             parent.spawn((
+                Sprite::from_color(Color::srgba(0.25, 0.20, 0.16, 0.0), Vec2::new(12.0, 13.0)),
+                Transform::from_xyz(0.0, -1.0, 0.05),
+                NpcCloak,
+            ));
+            parent.spawn((
                 Sprite::from_color(Color::srgb(0.17, 0.28, 0.58), Vec2::new(10.0, 14.0)),
                 Transform::from_xyz(0.0, -1.0, 0.1),
                 NpcTorso,
@@ -247,54 +276,306 @@ fn attach_npc_visuals(mut commands: Commands, npcs: Query<Entity, Added<Npc>>) {
                 Transform::from_xyz(0.0, 2.0, -0.1),
                 NpcAura,
             ));
+            parent.spawn((
+                Sprite::from_color(Color::srgba(0.68, 0.62, 0.52, 0.0), Vec2::new(3.0, 11.0)),
+                Transform::from_xyz(7.0, -2.0, 0.28).with_rotation(Quat::from_rotation_z(-0.25)),
+                NpcHandItem,
+            ));
         });
     }
 }
 
 fn sync_npc_visuals(
+    step: Res<SimulationStep>,
     npcs: Query<
-        (&Npc, &ManaReservoir, &ManaPractice, &Children),
-        Or<(Changed<Npc>, Changed<ManaReservoir>, Changed<ManaPractice>)>,
+        (
+            &Npc,
+            &Lifecycle,
+            &Inventory,
+            &NpcIntent,
+            &NpcCondition,
+            &ManaReservoir,
+            &ManaPractice,
+            &Children,
+        ),
     >,
-    mut torsos: Query<&mut Sprite, With<NpcTorso>>,
-    mut heads: Query<&mut Sprite, (With<NpcHead>, Without<NpcTorso>)>,
+    mut torsos: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<NpcTorso>,
+            Without<NpcHead>,
+            Without<NpcLeg>,
+            Without<NpcCloak>,
+            Without<NpcHandItem>,
+            Without<NpcAura>,
+        ),
+    >,
+    mut heads: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<NpcHead>,
+            Without<NpcTorso>,
+            Without<NpcLeg>,
+            Without<NpcCloak>,
+            Without<NpcHandItem>,
+            Without<NpcAura>,
+        ),
+    >,
+    mut legs: Query<
+        &mut Transform,
+        (
+            With<NpcLeg>,
+            Without<NpcTorso>,
+            Without<NpcHead>,
+            Without<NpcCloak>,
+            Without<NpcHandItem>,
+            Without<NpcAura>,
+        ),
+    >,
+    mut cloaks: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<NpcCloak>,
+            Without<NpcTorso>,
+            Without<NpcHead>,
+            Without<NpcLeg>,
+            Without<NpcHandItem>,
+            Without<NpcAura>,
+        ),
+    >,
+    mut items: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<NpcHandItem>,
+            Without<NpcTorso>,
+            Without<NpcHead>,
+            Without<NpcLeg>,
+            Without<NpcCloak>,
+            Without<NpcAura>,
+        ),
+    >,
     mut auras: Query<
         (&mut Sprite, &mut Transform),
-        (With<NpcAura>, Without<NpcTorso>, Without<NpcHead>),
+        (
+            With<NpcAura>,
+            Without<NpcTorso>,
+            Without<NpcHead>,
+            Without<NpcLeg>,
+            Without<NpcCloak>,
+            Without<NpcHandItem>,
+        ),
     >,
 ) {
-    for (npc, reservoir, practice, children) in &npcs {
+    let phase = step.elapsed_days * 28.0;
+    for (npc, lifecycle, inventory, intent, condition, reservoir, practice, children) in &npcs {
         let fill_ratio = if reservoir.capacity <= 0.0 {
             0.0
         } else {
             reservoir.stored / reservoir.capacity
         };
+        let age_ratio = (lifecycle.age_days / lifecycle.maturity_age.max(1.0)).clamp(0.0, 1.35);
+        let body_scale = if age_ratio < 1.0 {
+            0.45 + age_ratio * 0.55
+        } else {
+            1.0 + (age_ratio - 1.0) * 0.06
+        };
+        let child_tint = if age_ratio < 1.0 { 0.12 } else { 0.0 };
+        let clothing_alpha = (inventory.clothing * 0.85).clamp(0.0, 0.95);
+        let weapon_alpha =
+            (inventory.weapons * 0.95 + npc.woodcutting_tools * 0.55).clamp(0.0, 1.0);
+        let mana_glow = (fill_ratio * 0.25 + reservoir.stability * 0.08).clamp(0.0, 0.45);
+        let carry_ratio = inventory.carry_ratio();
+        let work_label = intent.label.as_str();
+        let work_cycle = match work_label {
+            "Gather Wood" => (phase * 1.5).sin(),
+            "Stockpile" => (phase * 1.3).sin(),
+            "Build Shelter" | "Repair Shelter" => (phase * 1.2).sin(),
+            "Build Fire" | "Tend Fire" => (phase * 2.4).sin(),
+            "Hunt Predator" | "Raid" | "Flee" | "Retreat" => (phase * 2.1).sin(),
+            _ => phase.sin() * 0.35,
+        };
+        let is_hearth_work = matches!(work_label, "Build Fire" | "Tend Fire");
+        let is_combat = matches!(work_label, "Hunt Predator" | "Raid" | "Flee" | "Retreat");
+        let is_telekinetic_work = practice.telekinesis >= 0.35
+            && matches!(
+                work_label,
+                "Gather Wood" | "Stockpile" | "Build Shelter" | "Repair Shelter" | "Forage"
+            );
+        let ward_pulse = if practice.warding >= 0.35 && is_combat {
+            0.25 + ((phase * 3.6).sin() * 0.5 + 0.5) * 0.75
+        } else {
+            0.0
+        };
+        let raid_ward_flash = if practice.warding >= 0.35
+            && condition.last_damage_reason.contains("raid")
+            && step.elapsed_days - condition.last_damage_day < 0.25
+        {
+            0.45 + ((phase * 8.0).sin() * 0.5 + 0.5) * 0.55
+        } else {
+            0.0
+        };
 
         for child in children.iter() {
-            if let Ok(mut sprite) = torsos.get_mut(child) {
+            if let Ok((mut sprite, mut transform)) = torsos.get_mut(child) {
                 sprite.color = if fill_ratio > 0.65 {
-                    Color::srgb(0.20, 0.35, 0.76)
+                    Color::srgb(0.20 + child_tint, 0.35 + child_tint * 0.5, 0.76)
                 } else {
-                    Color::srgb(0.17, 0.28, 0.58)
+                    Color::srgb(0.17 + child_tint, 0.28 + child_tint * 0.4, 0.58)
                 };
+                sprite.custom_size = Some(Vec2::new(10.0, 14.0) * body_scale);
+                transform.translation.y = -1.0 * body_scale + work_cycle * 0.55;
             }
 
-            if let Ok(mut sprite) = heads.get_mut(child) {
+            if let Ok((mut sprite, mut transform)) = heads.get_mut(child) {
                 sprite.color = if npc.health < 35.0 {
                     Color::srgb(0.84, 0.72, 0.60)
                 } else {
                     Color::srgb(0.92, 0.82, 0.68)
                 };
+                sprite.custom_size = Some(Vec2::splat(8.0 * body_scale));
+                transform.translation.x = if is_combat {
+                    0.4 * work_cycle
+                } else {
+                    0.0
+                };
+                transform.translation.y = 10.0 * body_scale + work_cycle.abs() * 0.25;
+            }
+
+            if let Ok(mut transform) = legs.get_mut(child) {
+                transform.scale = Vec3::new(1.0, body_scale, 1.0);
+                transform.translation.y = -11.0 * body_scale - work_cycle.abs() * 0.45;
+            }
+
+            if let Ok((mut sprite, mut transform)) = cloaks.get_mut(child) {
+                sprite.color = Color::srgba(
+                    0.32 + fill_ratio * 0.18,
+                    0.24 + mana_glow * 0.35,
+                    0.16 + mana_glow * 0.55,
+                    clothing_alpha,
+                );
+                sprite.custom_size = Some(Vec2::new(12.0, 13.0) * body_scale);
+                transform.translation.y = -1.0 * body_scale;
+            }
+
+            if let Ok((mut sprite, mut transform)) = items.get_mut(child) {
+                let has_weapon = inventory.weapons > 0.08;
+                let has_tool = npc.woodcutting_tools > 0.08;
+                let telekinetic_tool = practice.telekinesis >= 0.35 && (has_weapon || has_tool);
+                let is_load = is_telekinetic_work && carry_ratio > 0.18;
+                sprite.color = if is_load {
+                    Color::srgba(
+                        0.58 + carry_ratio * 0.12,
+                        0.48 + practice.telekinesis * 0.14,
+                        0.36 + mana_glow * 0.25,
+                        0.82,
+                    )
+                } else if is_hearth_work {
+                    Color::srgba(
+                        0.96,
+                        0.56 + practice.hearthspark * 0.12,
+                        0.18 + mana_glow * 0.18,
+                        0.88,
+                    )
+                } else if has_weapon {
+                    Color::srgba(
+                        0.74 + practice.hunter_focus * 0.10,
+                        0.74,
+                        0.80 + mana_glow * 0.3,
+                        weapon_alpha,
+                    )
+                } else if has_tool {
+                    Color::srgba(
+                        0.58,
+                        0.46 + practice.hearthspark * 0.06,
+                        0.30 + practice.telekinesis * 0.08,
+                        weapon_alpha * 0.85,
+                    )
+                } else {
+                    Color::srgba(0.0, 0.0, 0.0, 0.0)
+                };
+                sprite.custom_size = Some(if is_load {
+                    Vec2::new(8.0 + carry_ratio * 6.0, 6.0 + carry_ratio * 5.0)
+                } else if is_hearth_work {
+                    Vec2::new(4.0 + practice.hearthspark * 3.0, 8.0 + practice.hearthspark * 5.0)
+                } else if has_weapon {
+                    Vec2::new(3.0, 12.0 * body_scale)
+                } else {
+                    Vec2::new(4.0, 9.0 * body_scale)
+                });
+                transform.translation = if is_load {
+                    Vec3::new(
+                        0.0,
+                        8.0 * body_scale + 2.0 + work_cycle * 1.8,
+                        0.34 + practice.telekinesis * 0.10,
+                    )
+                } else if is_hearth_work {
+                    Vec3::new(
+                        6.2 * body_scale,
+                        0.2 * body_scale + work_cycle * 1.0,
+                        0.32,
+                    )
+                } else {
+                    Vec3::new(7.0 * body_scale, -2.0 * body_scale, 0.28)
+                };
+                transform.rotation = if is_load {
+                    Quat::from_rotation_z(work_cycle * 0.12)
+                } else if has_weapon {
+                    Quat::from_rotation_z(-0.45)
+                } else {
+                    Quat::from_rotation_z(-0.20)
+                };
+                if telekinetic_tool {
+                    transform.translation.x += 1.5;
+                    transform.translation.y += 1.2;
+                }
             }
 
             if let Ok((mut sprite, mut transform)) = auras.get_mut(child) {
                 let alpha = (0.08 + fill_ratio * 0.22).min(0.35);
                 sprite.color = if reservoir.stability < 0.45 || practice.backlash > 0.0 {
                     Color::srgba(0.92, 0.42, 0.28, alpha)
+                } else if practice.telekinesis >= 0.35 {
+                    Color::srgba(0.50, 0.72, 0.98, alpha + 0.05)
+                } else if practice.hearthspark >= 0.35 {
+                    Color::srgba(0.94, 0.54, 0.24, alpha + 0.05)
+                } else if practice.warding >= 0.35 {
+                    Color::srgba(0.34, 0.88, 0.70, alpha + 0.05)
+                } else if practice.hunter_focus >= 0.35 {
+                    Color::srgba(0.78, 0.32, 0.90, alpha + 0.05)
+                } else if practice.verdant_touch >= 0.35 {
+                    Color::srgba(0.42, 0.84, 0.42, alpha + 0.05)
                 } else {
                     Color::srgba(0.35, 0.72, 0.92, alpha)
                 };
-                transform.scale = Vec3::splat(0.9 + fill_ratio * 0.35);
+                transform.scale = Vec3::splat(
+                    (0.7
+                        + fill_ratio * 0.45
+                        + practice.discovered_count() as f32 * 0.05
+                        + ward_pulse
+                        + if is_hearth_work {
+                            practice.hearthspark * 0.12
+                        } else {
+                            0.0
+                        })
+                        * body_scale.max(0.7),
+                );
+                transform.translation.y = 2.0 + if is_hearth_work { work_cycle.abs() * 1.2 } else { 0.0 };
+                if practice.warding >= 0.35 && is_combat {
+                    sprite.color = Color::srgba(
+                        0.34,
+                        0.90,
+                        0.72,
+                        (alpha + 0.10 + ward_pulse * 0.18 + raid_ward_flash * 0.20)
+                            .clamp(0.0, 0.85),
+                    );
+                } else if raid_ward_flash > 0.0 {
+                    sprite.color = Color::srgba(
+                        0.68,
+                        0.96,
+                        0.86,
+                        (alpha + raid_ward_flash * 0.24).clamp(0.0, 0.82),
+                    );
+                }
             }
         }
     }

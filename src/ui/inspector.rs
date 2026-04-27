@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::agents::animal::{Animal, AnimalLifeStage, Pregnancy};
 use crate::agents::decisions::NpcIntent;
@@ -15,6 +16,7 @@ use crate::agents::society::{DiplomacyState, FactionSociety};
 use crate::life::growth::Lifecycle;
 use crate::life::reproduction::NpcPregnancy;
 use crate::magic::mana::ManaReservoir;
+use crate::magic::storage::ManaPractice;
 use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
@@ -36,7 +38,10 @@ impl Plugin for InspectorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedEntity>()
             .add_systems(PostStartup, spawn_inspector)
-            .add_systems(Update, (cycle_selected_entity, update_inspector));
+            .add_systems(
+                Update,
+                (cycle_selected_entity, click_select_entity, update_inspector),
+            );
     }
 }
 
@@ -109,6 +114,56 @@ fn cycle_selected_entity(
     selected.entity = Some(entities[selected.index].0);
 }
 
+fn click_select_entity(
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform, &Transform), With<Camera2d>>,
+    trees: Query<(Entity, &Transform), With<Tree>>,
+    shelters: Query<(Entity, &Transform), With<Shelter>>,
+    civic_structures: Query<(Entity, &Transform), With<CivicStructure>>,
+    animals: Query<(Entity, &Transform), With<Animal>>,
+    predators: Query<(Entity, &Transform), With<Predator>>,
+    npcs: Query<(Entity, &Transform), With<Npc>>,
+    mut selected: ResMut<SelectedEntity>,
+) {
+    let Some(mouse) = mouse else {
+        return;
+    };
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let Some((camera, camera_transform, _)) = cameras
+        .iter()
+        .find(|(_, _, transform)| transform.translation.truncate().length() < 10_000.0)
+    else {
+        return;
+    };
+    let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor) else {
+        return;
+    };
+
+    let best = trees
+        .iter()
+        .chain(shelters.iter())
+        .chain(civic_structures.iter())
+        .chain(animals.iter())
+        .chain(predators.iter())
+        .chain(npcs.iter())
+        .map(|(entity, transform)| (entity, transform.translation.truncate().distance(world_pos)))
+        .filter(|(_, distance)| *distance < 26.0)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+
+    if let Some((entity, _)) = best {
+        selected.entity = Some(entity);
+    }
+}
+
 fn update_inspector(
     selected: Res<SelectedEntity>,
     settings: Res<MapSettings>,
@@ -136,6 +191,7 @@ fn update_inspector(
         &NpcHome,
         &Inventory,
         &ManaReservoir,
+        &ManaPractice,
         &Transform,
         Option<&FactionMember>,
         Option<&NpcPregnancy>,
@@ -148,20 +204,22 @@ fn update_inspector(
     let body = if let Some(entity) = selected.entity {
         if let Ok((tree, transform, mana)) = trees.get(entity) {
             format!(
-                "Type: Tree\nStage: {}\nGrowth: {:.2}\nChop: {:.2}\nPos: {:.0}, {:.0}\nMana: {:.1}",
+                "Type: Tree\nStage: {}\nGrowth: {:.2}\nChop: {:.2}\nPos: {:.0}, {:.0}\nMana: {:.1} | resistance {:.2}x",
                 tree_stage_label(tree.stage),
                 tree.growth,
                 tree.chop_progress,
                 transform.translation.x,
                 transform.translation.y,
                 mana.map(|m| m.stored).unwrap_or(0.0),
+                1.0 + mana.map(|m| m.stored / m.capacity.max(1.0)).unwrap_or(0.0) * 1.8,
             )
         } else if let Ok((shelter, stockpile, transform, member)) = shelters.get(entity) {
             let stockpile_line = stockpile
                 .map(|pile| {
                     format!(
-                        "Stockpile F/W: {:.1}/{:.1} (max {:.0}/{:.0})",
-                        pile.food, pile.wood, pile.max_food, pile.max_wood
+                        "Stockpile F/W: {:.1}/{:.1} (max {:.0}/{:.0})\nStores S/Fi/Hi/O/M/C/Wp: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}",
+                        pile.food, pile.wood, pile.max_food, pile.max_wood,
+                        pile.seeds, pile.fiber, pile.hides, pile.ore, pile.metal, pile.clothing, pile.weapons
                     )
                 })
                 .unwrap_or_else(|| "Stockpile: none".to_string());
@@ -221,10 +279,13 @@ fn update_inspector(
             )
         } else if let Ok((predator, transform)) = predators.get(entity) {
             format!(
-                "Type: Predator\nHealth: {:.1}\nHunger: {:.2}\nSpeed: {:.1}\nPos: {:.0}, {:.0}",
+                "Type: Predator\nHealth: {:.1}\nHunger: {:.2}\nSpeed: {:.1}\nAge: {:.0}d\nMana mutation: {:.2}\nAbility: {}\nPos: {:.0}, {:.0}",
                 predator.health,
                 predator.hunger,
                 predator.speed,
+                predator.age_days,
+                predator.mana_mutation,
+                predator.ability.label(),
                 transform.translation.x,
                 transform.translation.y,
             )
@@ -237,6 +298,7 @@ fn update_inspector(
             home,
             inventory,
             mana,
+            mana_practice,
             transform,
             member,
             pregnancy,
@@ -369,7 +431,7 @@ fn update_inspector(
                 .unwrap_or_else(|| "Psyche: not initialized".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\n{}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nCraft S/Fi/Hi/O/M/C/W: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\n{}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nCraft S/Fi/Hi/O/M/C/W: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\nDiscipline: {} | control {:.2} | dominant {}\nAbilities ({}) {}\nSpells: {}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.sex.label(),
                 npc.gender.label(),
@@ -418,6 +480,12 @@ fn update_inspector(
                 npc.exposure,
                 mana.stored,
                 mana.capacity,
+                mana_practice.discipline.label(),
+                mana_practice.control,
+                mana_practice.dominant_ability_label(),
+                mana_practice.discovered_count(),
+                mana_practice.abilities_summary(),
+                mana_practice.spell_summary(),
                 home_line,
                 memory.last_mana_insight,
                 transform.translation.x,

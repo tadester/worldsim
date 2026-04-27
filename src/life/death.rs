@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
-use crate::agents::npc::Npc;
+use crate::agents::needs::Needs;
+use crate::agents::npc::{Npc, NpcCondition};
 use crate::life::growth::Lifecycle;
 use crate::life::population::{PopulationKind, PopulationStats};
+use crate::magic::storage::ManaPractice;
 use crate::systems::logging::{LogEvent, LogEventKind, NpcDeathEvent};
 use crate::systems::simulation::SimulationStep;
 
@@ -22,7 +24,14 @@ fn cleanup_dead_entities(
     mut writer: MessageWriter<LogEvent>,
     mut npc_death_writer: MessageWriter<NpcDeathEvent>,
     animals: Query<(Entity, &Lifecycle, &Animal)>,
-    npcs: Query<(Entity, &Lifecycle, &Npc)>,
+    npcs: Query<(
+        Entity,
+        &Lifecycle,
+        &Npc,
+        &Needs,
+        Option<&NpcCondition>,
+        Option<&ManaPractice>,
+    )>,
 ) {
     for (entity, lifecycle, animal) in &animals {
         let reason = if lifecycle.age_days >= lifecycle.max_age {
@@ -45,13 +54,24 @@ fn cleanup_dead_entities(
         }
     }
 
-    for (entity, lifecycle, npc) in &npcs {
+    for (entity, lifecycle, npc, needs, condition, mana_practice) in &npcs {
         let reason = if lifecycle.age_days >= lifecycle.max_age {
             Some("old age")
-        } else if npc.exposure > 1.0 && npc.health <= 0.0 {
-            Some("cold exposure")
+        } else if npc.health <= 0.0 && needs.hunger > 0.98 && needs.thirst > 0.92 {
+            Some("starved and dehydrated after prolonged deprivation")
+        } else if npc.health <= 0.0 && needs.hunger > 0.98 {
+            Some("starved after food exhaustion")
+        } else if npc.health <= 0.0 && npc.exposure > 1.25 {
+            Some("froze from severe night exposure")
+        } else if npc.health <= 0.0
+            && mana_practice.is_some_and(|practice| practice.backlash > 0.015)
+        {
+            Some("died from uncontrolled mana backlash")
         } else if npc.health <= 0.0 {
-            Some("injury, starvation, or exposure")
+            condition
+                .filter(|condition| !condition.last_damage_reason.is_empty())
+                .map(|condition| condition.last_damage_reason.as_str())
+                .or(Some("succumbed to untreated wounds"))
         } else {
             None
         };

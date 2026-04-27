@@ -231,7 +231,7 @@ fn update_dashboard_text(
             latest
         ));
         text.0.push_str(&format!(
-            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nEconomy: ore {:.1} | metal {:.1} | clothing {:.1} | weapons {:.1}\nDiplomacy: wars {} | feuds {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
+            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nEconomy: ore {:.1} | metal {:.1} | clothing {:.1} | weapons {:.1}\nFood web: carried {:.1} stockpiled {:.1} | wood carried {:.1} stockpiled {:.1}\nUI parity: inspector click-select | civic/farm/pasture visible | clothing/tools visible\nDiplomacy: wars {} | feuds {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
             world_mind.stance,
             world_mind.intent,
             world_mind.pressure,
@@ -249,6 +249,10 @@ fn update_dashboard_text(
             stats.total_metal,
             stats.total_clothing,
             stats.total_weapons,
+            stats.total_food_carried,
+            stats.total_food_stockpiled,
+            stats.total_wood_carried,
+            stats.total_wood_stockpiled,
             active_wars,
             active_feuds,
             programs.unlocked.len(),
