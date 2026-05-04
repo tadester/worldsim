@@ -3,12 +3,10 @@ use bevy::prelude::*;
 use crate::agents::animal::AnimalBundle;
 use crate::agents::decisions::NpcIntent;
 use crate::agents::inventory::Inventory;
-use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
+use crate::agents::npc::{Npc, NpcHome};
 use crate::agents::personality::PersonalityType;
 use crate::agents::society::FactionSociety;
-use crate::life::population::{PopulationKind, PopulationStats};
-use crate::magic::mana::ManaReservoir;
-use crate::magic::storage::ManaStorageStyle;
+use crate::life::population::PopulationStats;
 use crate::systems::logging::{LogEvent, LogEventKind, NpcDeathLog};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::director::WorldMind;
@@ -234,8 +232,8 @@ impl Plugin for ProgramPlugin {
                     npc_self_discover_programs,
                     cultural_learning_from_deaths,
                     update_world_cultural_pressure,
-                    world_spawn_rescue_settlers.after(update_world_cultural_pressure),
-                    world_nurture_thriving_society.after(world_spawn_rescue_settlers),
+                    update_migration_pressure.after(update_world_cultural_pressure),
+                    world_nurture_thriving_society.after(update_migration_pressure),
                     build_society_projects,
                     advance_civic_projects.after(build_society_projects),
                     apply_known_program_effects,
@@ -633,16 +631,12 @@ fn world_nurture_thriving_society(
     ));
 }
 
-fn world_spawn_rescue_settlers(
-    mut commands: Commands,
+fn update_migration_pressure(
     step: Res<SimulationStep>,
-    settings: Res<MapSettings>,
     stats: Res<WorldStats>,
     mut state: ResMut<WorldProgramState>,
-    mut population: ResMut<PopulationStats>,
     mut world_actions: ResMut<WorldActionLog>,
     mut writer: MessageWriter<LogEvent>,
-    tiles: Query<(&RegionTile, &Transform)>,
 ) {
     let generations_elapsed = step.elapsed_days / (22.0 * 365.0);
     if stats.npcs >= 4
@@ -652,96 +646,19 @@ fn world_spawn_rescue_settlers(
         return;
     }
 
-    let mut candidates = tiles
-        .iter()
-        .filter(|(tile, _)| tile.soil_fertility > 0.45 && tile.temperature > 0.35)
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return;
-    }
-    candidates.sort_by(|(a, _), (b, _)| {
-        (b.soil_fertility + b.temperature + b.mana_density * 0.5)
-            .total_cmp(&(a.soil_fertility + a.temperature + a.mana_density * 0.5))
-    });
-
-    let spawn_count = (4usize).saturating_sub(stats.npcs).clamp(1, 3);
-    for idx in 0..spawn_count {
-        let (tile, transform) = candidates[idx % candidates.len()];
-        let offset = Vec2::new((idx as f32 * 2.41).cos(), (idx as f32 * 2.41).sin())
-            * settings.tile_size
-            * 0.18;
-        let sex = if (step.tick + idx as u64).is_multiple_of(2) {
-            NpcSex::Female
-        } else {
-            NpcSex::Male
-        };
-        let gender = if sex == NpcSex::Female {
-            NpcGender::Woman
-        } else {
-            NpcGender::Man
-        };
-        let entity = commands
-            .spawn(
-                NpcBundle::new(
-                    transform.translation.truncate() + offset,
-                    format!("Rescue Settler {}", step.tick % 10_000 + idx as u64),
-                    70.0,
-                    ManaReservoir {
-                        capacity: 28.0 + tile.mana_density * 20.0,
-                        stored: 8.0 + tile.mana_density * 8.0,
-                        stability: 0.92,
-                    },
-                    ManaStorageStyle {
-                        concentration: 0.28 + tile.mana_density * 0.12,
-                        circulation: 0.42,
-                        distribution: 0.36,
-                    },
-                )
-                .with_identity(sex, gender)
-                .with_tooling(0.75, 0.45)
-                .with_drives(1.2, 1.1, 0.35, 0.72)
-                .with_personality(
-                    PersonalityType::Builder,
-                    0.44,
-                    0.30,
-                    0.38,
-                    0.18,
-                    0.26,
-                    0.22,
-                    0.16,
-                )
-                .with_age_days((22.0 + idx as f32 * 4.0) * 365.0),
-            )
-            .id();
-        let mut known = KnownPrograms::default();
-        for program in [
-            ProgramId::Firemaking,
-            ProgramId::HearthKeeping,
-            ProgramId::ShelterBuilding,
-            ProgramId::ShelterRepair,
-            ProgramId::Toolmaking,
-            ProgramId::FoodStorage,
-            ProgramId::Childcare,
-            ProgramId::FirstAid,
-            ProgramId::Teaching,
-            ProgramId::ManaSensing,
-        ] {
-            known.grant(program, "rescue settler starting knowledge");
-        }
-        commands.entity(entity).insert(known);
-        population.record_birth(PopulationKind::Npc, step.elapsed_days);
-    }
-
     state.last_spawn_day = step.elapsed_days;
+    state.care_discovery_pressure = (state.care_discovery_pressure + 0.24).clamp(0.0, 1.0);
+    state.hunger_discovery_pressure = (state.hunger_discovery_pressure + 0.14).clamp(0.0, 1.0);
+    state.culture_pressure = (state.culture_pressure + 0.18).clamp(0.0, 1.0);
     push_world_action(
         &mut world_actions,
         step.elapsed_days,
-        "Rescue settlers arrived",
-        format!("Sent {spawn_count} adult settlers into the simulation"),
+        "Migration pressure rose",
+        "The world made family, teaching, and food-security adaptations more likely",
     );
     writer.write(LogEvent::new(
-        LogEventKind::Birth,
-        format!("World mind sent {spawn_count} rescue settlers"),
+        LogEventKind::Discovery,
+        "Population stress increased migration and culture pressure".to_string(),
     ));
 }
 
