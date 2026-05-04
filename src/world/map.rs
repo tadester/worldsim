@@ -40,6 +40,7 @@ impl MapSettings {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RegionTile {
     pub coord: IVec2,
+    pub biome: BiomeKind,
     pub elevation: f32,
     pub moisture: f32,
     pub mana_density: f32,
@@ -50,19 +51,38 @@ pub struct RegionTile {
     pub temperature: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BiomeKind {
+    Water,
+    Highland,
+    Dryland,
+    Wetland,
+    Forest,
+    Meadow,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RegionState {
     pub forage: f32,
     pub forage_capacity: f32,
     pub tree_biomass: f32,
     pub tree_biomass_capacity: f32,
+    pub path_wear: f32,
+    pub settlement_clearance: f32,
 }
+
+#[derive(Component)]
+struct PathWearOverlay;
+
+#[derive(Component)]
+struct SettlementClearOverlay;
 
 pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (spawn_camera, generate_map).chain());
+        app.add_systems(Startup, (spawn_camera, generate_map).chain())
+            .add_systems(Update, sync_region_detail_visuals);
     }
 }
 
@@ -100,6 +120,7 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
             let temperature = (0.48 + xf * 0.12 - yf * 0.20 - elevation * 0.18
                 + mana_density * 0.06)
                 .clamp(0.0, 1.0);
+            let biome = biome_for(elevation, moisture, soil_fertility, tree_capacity);
 
             let pos_x = x as f32 * settings.tile_size - half_width + settings.tile_size * 0.5;
             let pos_y = y as f32 * settings.tile_size - half_height + settings.tile_size * 0.5;
@@ -108,12 +129,14 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
             let shadow = tile_shadow_color(tint, elevation);
             let detail_offset = detail_offset(x, y);
 
+            let tile_size = settings.tile_size + 3.5;
             commands
                 .spawn((
-                    Sprite::from_color(tint, Vec2::splat(settings.tile_size - 1.0)),
+                    Sprite::from_color(tint, Vec2::splat(tile_size)),
                     Transform::from_xyz(pos_x, pos_y, 0.0),
                     RegionTile {
                         coord: IVec2::new(x, y),
+                        biome,
                         elevation,
                         moisture,
                         mana_density,
@@ -129,25 +152,98 @@ fn generate_map(mut commands: Commands, settings: Res<MapSettings>) {
                         forage_capacity: animal_capacity,
                         tree_biomass: tree_capacity * 0.45,
                         tree_biomass_capacity: tree_capacity,
+                        path_wear: 0.0,
+                        settlement_clearance: 0.0,
                     },
                 ))
                 .with_children(|parent| {
                     parent.spawn((
                         Sprite::from_color(
+                            tile_highlight_color(tint, moisture, temperature),
+                            Vec2::new(settings.tile_size * 0.88, settings.tile_size * 0.52),
+                        ),
+                        Transform::from_xyz(-detail_offset.x * 0.45, detail_offset.y * 0.35, 0.006)
+                            .with_rotation(Quat::from_rotation_z(
+                                ((x * 31 + y * 17) as f32).sin() * 0.18,
+                            )),
+                    ));
+                    parent.spawn((
+                        Sprite::from_color(
                             shadow,
-                            Vec2::new(settings.tile_size * 0.92, settings.tile_size * 0.16),
+                            Vec2::new(settings.tile_size * 1.05, settings.tile_size * 0.20),
                         ),
                         Transform::from_xyz(0.0, -settings.tile_size * 0.22, 0.01),
                     ));
                     parent.spawn((
                         Sprite::from_color(
                             accent,
-                            Vec2::new(settings.tile_size * 0.30, settings.tile_size * 0.24),
+                            Vec2::new(settings.tile_size * 0.42, settings.tile_size * 0.30),
                         ),
-                        Transform::from_xyz(detail_offset.x, detail_offset.y, 0.02),
+                        Transform::from_xyz(detail_offset.x, detail_offset.y, 0.02).with_rotation(
+                            Quat::from_rotation_z(((x * 13 - y * 19) as f32).cos() * 0.22),
+                        ),
+                    ));
+                    parent.spawn((
+                        Sprite::from_color(
+                            Color::srgba(0.56, 0.46, 0.32, 0.0),
+                            Vec2::new(settings.tile_size * 1.05, settings.tile_size * 0.12),
+                        ),
+                        Transform::from_xyz(0.0, 0.0, 0.04).with_rotation(Quat::from_rotation_z(
+                            ((x * 7 + y * 23) as f32).sin() * 0.35,
+                        )),
+                        PathWearOverlay,
+                    ));
+                    parent.spawn((
+                        Sprite::from_color(
+                            Color::srgba(0.60, 0.52, 0.38, 0.0),
+                            Vec2::new(settings.tile_size * 0.90, settings.tile_size * 0.70),
+                        ),
+                        Transform::from_xyz(0.0, 0.0, 0.035),
+                        SettlementClearOverlay,
                     ));
                 });
         }
+    }
+}
+
+fn sync_region_detail_visuals(
+    regions: Query<(&RegionState, &Children), Changed<RegionState>>,
+    mut paths: Query<&mut Sprite, With<PathWearOverlay>>,
+    mut clearings: Query<&mut Sprite, (With<SettlementClearOverlay>, Without<PathWearOverlay>)>,
+) {
+    for (state, children) in &regions {
+        for child in children.iter() {
+            if let Ok(mut sprite) = paths.get_mut(child) {
+                let wear = state.path_wear.clamp(0.0, 1.0);
+                sprite.color = Color::srgba(0.58, 0.49, 0.35, wear * 0.42);
+                sprite.custom_size = Some(Vec2::new(32.0 + wear * 18.0, 3.0 + wear * 5.0));
+            }
+            if let Ok(mut sprite) = clearings.get_mut(child) {
+                let clearance = state.settlement_clearance.clamp(0.0, 1.0);
+                sprite.color = Color::srgba(
+                    0.58 + clearance * 0.08,
+                    0.52 + clearance * 0.05,
+                    0.38,
+                    clearance * 0.30,
+                );
+            }
+        }
+    }
+}
+
+fn biome_for(elevation: f32, moisture: f32, fertility: f32, tree_capacity: f32) -> BiomeKind {
+    if elevation < 0.24 {
+        BiomeKind::Water
+    } else if elevation > 0.74 {
+        BiomeKind::Highland
+    } else if moisture < 0.24 {
+        BiomeKind::Dryland
+    } else if moisture > 0.66 {
+        BiomeKind::Wetland
+    } else if tree_capacity > 6.0 && fertility > 0.36 {
+        BiomeKind::Forest
+    } else {
+        BiomeKind::Meadow
     }
 }
 
@@ -206,6 +302,16 @@ fn tile_accent_color(base: Color, mana_density: f32, elevation: f32) -> Color {
         (rgba.green + mana_density * 0.10 + elevation * 0.05).clamp(0.0, 1.0),
         (rgba.blue + mana_density * 0.22).clamp(0.0, 1.0),
         0.38,
+    )
+}
+
+fn tile_highlight_color(base: Color, moisture: f32, temperature: f32) -> Color {
+    let rgba = base.to_srgba();
+    Color::srgba(
+        (rgba.red + 0.04 + temperature * 0.03).clamp(0.0, 1.0),
+        (rgba.green + 0.05 + moisture * 0.06).clamp(0.0, 1.0),
+        (rgba.blue + moisture * 0.03).clamp(0.0, 1.0),
+        0.24,
     )
 }
 

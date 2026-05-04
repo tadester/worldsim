@@ -287,18 +287,16 @@ fn attach_npc_visuals(mut commands: Commands, npcs: Query<Entity, Added<Npc>>) {
 
 fn sync_npc_visuals(
     step: Res<SimulationStep>,
-    npcs: Query<
-        (
-            &Npc,
-            &Lifecycle,
-            &Inventory,
-            &NpcIntent,
-            &NpcCondition,
-            &ManaReservoir,
-            &ManaPractice,
-            &Children,
-        ),
-    >,
+    npcs: Query<(
+        &Npc,
+        &Lifecycle,
+        &Inventory,
+        &NpcIntent,
+        &NpcCondition,
+        &ManaReservoir,
+        &ManaPractice,
+        &Children,
+    )>,
     mut torsos: Query<
         (&mut Sprite, &mut Transform),
         (
@@ -433,11 +431,7 @@ fn sync_npc_visuals(
                     Color::srgb(0.92, 0.82, 0.68)
                 };
                 sprite.custom_size = Some(Vec2::splat(8.0 * body_scale));
-                transform.translation.x = if is_combat {
-                    0.4 * work_cycle
-                } else {
-                    0.0
-                };
+                transform.translation.x = if is_combat { 0.4 * work_cycle } else { 0.0 };
                 transform.translation.y = 10.0 * body_scale + work_cycle.abs() * 0.25;
             }
 
@@ -496,7 +490,10 @@ fn sync_npc_visuals(
                 sprite.custom_size = Some(if is_load {
                     Vec2::new(8.0 + carry_ratio * 6.0, 6.0 + carry_ratio * 5.0)
                 } else if is_hearth_work {
-                    Vec2::new(4.0 + practice.hearthspark * 3.0, 8.0 + practice.hearthspark * 5.0)
+                    Vec2::new(
+                        4.0 + practice.hearthspark * 3.0,
+                        8.0 + practice.hearthspark * 5.0,
+                    )
                 } else if has_weapon {
                     Vec2::new(3.0, 12.0 * body_scale)
                 } else {
@@ -509,11 +506,7 @@ fn sync_npc_visuals(
                         0.34 + practice.telekinesis * 0.10,
                     )
                 } else if is_hearth_work {
-                    Vec3::new(
-                        6.2 * body_scale,
-                        0.2 * body_scale + work_cycle * 1.0,
-                        0.32,
-                    )
+                    Vec3::new(6.2 * body_scale, 0.2 * body_scale + work_cycle * 1.0, 0.32)
                 } else {
                     Vec3::new(7.0 * body_scale, -2.0 * body_scale, 0.28)
                 };
@@ -548,8 +541,7 @@ fn sync_npc_visuals(
                     Color::srgba(0.35, 0.72, 0.92, alpha)
                 };
                 transform.scale = Vec3::splat(
-                    (0.7
-                        + fill_ratio * 0.45
+                    (0.7 + fill_ratio * 0.45
                         + practice.discovered_count() as f32 * 0.05
                         + ward_pulse
                         + if is_hearth_work {
@@ -559,7 +551,12 @@ fn sync_npc_visuals(
                         })
                         * body_scale.max(0.7),
                 );
-                transform.translation.y = 2.0 + if is_hearth_work { work_cycle.abs() * 1.2 } else { 0.0 };
+                transform.translation.y = 2.0
+                    + if is_hearth_work {
+                        work_cycle.abs() * 1.2
+                    } else {
+                        0.0
+                    };
                 if practice.warding >= 0.35 && is_combat {
                     sprite.color = Color::srgba(
                         0.34,

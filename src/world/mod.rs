@@ -3,6 +3,7 @@ pub mod director;
 pub mod map;
 pub mod proposals;
 pub mod resources;
+pub mod settlement;
 pub mod spawning;
 pub mod territory;
 
@@ -12,6 +13,7 @@ use director::WorldDirectorPlugin;
 use map::{MapPlugin, MapSettings};
 use proposals::WorldProposalPlugin;
 use resources::WorldResourcesPlugin;
+use settlement::SettlementPlugin;
 use spawning::WorldSpawningPlugin;
 use territory::TerritoryPlugin;
 
@@ -23,6 +25,7 @@ impl Plugin for WorldPlugin {
             MapPlugin,
             ClimatePlugin,
             WorldResourcesPlugin,
+            SettlementPlugin,
             TerritoryPlugin,
             WorldSpawningPlugin,
             WorldDirectorPlugin,

@@ -161,7 +161,8 @@ fn discover_mana_abilities(
             (ManaDiscipline::Kinesis, "Telekinesis")
         } else if style.distribution >= style.concentration && ambient > 0.62 {
             (ManaDiscipline::Verdant, "Verdant Touch")
-        } else if style.distribution >= style.circulation && practice.current_action == ManaAction::Distribute
+        } else if style.distribution >= style.circulation
+            && practice.current_action == ManaAction::Distribute
         {
             (ManaDiscipline::Warding, "Warding")
         } else if ambient < 0.40 && practice.current_action == ManaAction::Absorb {
@@ -196,37 +197,35 @@ fn discover_mana_abilities(
             + practice.control * 0.25
             + reservoir.stored / reservoir.capacity.max(1.0) * 0.15;
         if spell_signal > 0.64 {
-            let (spell_label, spell_power) = if practice.telekinesis >= 0.35
-                && style.circulation > 0.42
-                && ambient > 0.56
-            {
-                if practice.windstep < 0.35 {
-                    ("Windstep", &mut practice.windstep)
+            let (spell_label, spell_power) =
+                if practice.telekinesis >= 0.35 && style.circulation > 0.42 && ambient > 0.56 {
+                    if practice.windstep < 0.35 {
+                        ("Windstep", &mut practice.windstep)
+                    } else {
+                        ("Gravity Well", &mut practice.gravity_well)
+                    }
+                } else if practice.hearthspark >= 0.35
+                    && (ambient < 0.48 || practice.current_action == ManaAction::Release)
+                {
+                    ("Fireball", &mut practice.fireball)
+                } else if practice.warding >= 0.35
+                    && practice.current_action == ManaAction::Distribute
+                {
+                    if practice.healing_pulse < 0.35 {
+                        ("Healing Pulse", &mut practice.healing_pulse)
+                    } else {
+                        ("Stone Skin", &mut practice.stone_skin)
+                    }
+                } else if practice.verdant_touch >= 0.35 && ambient > 0.60 {
+                    ("Root Snare", &mut practice.root_snare)
+                } else if practice.hunter_focus >= 0.35 {
+                    ("Mana Bolt", &mut practice.mana_bolt)
                 } else {
-                    ("Gravity Well", &mut practice.gravity_well)
-                }
-            } else if practice.hearthspark >= 0.35
-                && (ambient < 0.48 || practice.current_action == ManaAction::Release)
-            {
-                ("Fireball", &mut practice.fireball)
-            } else if practice.warding >= 0.35 && practice.current_action == ManaAction::Distribute
-            {
-                if practice.healing_pulse < 0.35 {
-                    ("Healing Pulse", &mut practice.healing_pulse)
-                } else {
-                    ("Stone Skin", &mut practice.stone_skin)
-                }
-            } else if practice.verdant_touch >= 0.35 && ambient > 0.60 {
-                ("Root Snare", &mut practice.root_snare)
-            } else if practice.hunter_focus >= 0.35 {
-                ("Mana Bolt", &mut practice.mana_bolt)
-            } else {
-                continue;
-            };
+                    continue;
+                };
 
             let previous_tier = (*spell_power * 3.0).floor() as i32;
-            *spell_power = (*spell_power
-                + (0.0012 + spell_signal * 0.0018 + ambient * 0.0010))
+            *spell_power = (*spell_power + (0.0012 + spell_signal * 0.0018 + ambient * 0.0010))
                 .clamp(0.0, 1.0);
             let new_tier = (*spell_power * 3.0).floor() as i32;
             if new_tier > previous_tier && *spell_power >= 0.35 {

@@ -1,7 +1,10 @@
 use bevy::prelude::*;
 
 use crate::agents::animal::{Animal, AnimalBundle, AnimalLifeStage, Pregnancy};
+use crate::agents::evolution::EvolutionPressure;
+use crate::agents::factions::FactionMember;
 use crate::agents::inventory::Inventory;
+use crate::agents::kinship::Kinship;
 use crate::agents::needs::Needs;
 use crate::agents::npc::{Npc, NpcBundle, NpcGender, NpcHome, NpcSex};
 use crate::agents::personality::{NpcPsyche, PersonalityType};
@@ -12,6 +15,7 @@ use crate::magic::mana::ManaReservoir;
 use crate::magic::storage::ManaStorageStyle;
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
+use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionState, RegionTile};
 use crate::world::resources::{ShelterStockpile, Tree, TreeStage};
 
@@ -20,6 +24,9 @@ pub struct ReproductionPlugin;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct NpcPregnancy {
     pub gestation_days: f32,
+    pub father: Option<Entity>,
+    pub home_culture: Option<Entity>,
+    pub birth_home: Option<Entity>,
 }
 
 impl Plugin for ReproductionPlugin {
@@ -218,6 +225,7 @@ fn npc_reproduction(
             &Needs,
             &NpcHome,
             &Lifecycle,
+            Option<&NpcPsyche>,
             Option<&NpcPregnancy>,
         )>,
         Query<(
@@ -228,6 +236,8 @@ fn npc_reproduction(
             &Inventory,
             &NpcHome,
             &mut Lifecycle,
+            Option<&FactionMember>,
+            Option<&NpcPsyche>,
             Option<&NpcPregnancy>,
         )>,
     )>,
@@ -241,15 +251,17 @@ fn npc_reproduction(
         .p0()
         .iter()
         .filter_map(
-            |(entity, npc, transform, needs, home, lifecycle, pregnancy)| {
+            |(entity, npc, transform, needs, home, lifecycle, psyche, pregnancy)| {
+                let happiness = psyche.map(|psyche| psyche.happiness).unwrap_or(0.5);
                 if npc.sex != NpcSex::Male
                     || pregnancy.is_some()
                     || lifecycle.age_days < lifecycle.maturity_age
                     || lifecycle.reproduction_cooldown > 0.0
-                    || npc.health < 32.0
-                    || needs.hunger > 0.75
+                    || npc.health < 28.0
+                    || needs.hunger > 0.84
                     || needs.fatigue > 0.92
-                    || needs.safety < 0.18
+                    || needs.safety < 0.12
+                    || happiness < 0.18
                 {
                     None
                 } else {
@@ -259,18 +271,31 @@ fn npc_reproduction(
         )
         .collect();
 
-    for (entity, npc, transform, needs, inventory, home, mut lifecycle, pregnancy) in &mut npcs.p1()
+    for (
+        entity,
+        npc,
+        transform,
+        needs,
+        inventory,
+        home,
+        mut lifecycle,
+        member,
+        psyche,
+        pregnancy,
+    ) in &mut npcs.p1()
     {
+        let happiness = psyche.map(|psyche| psyche.happiness).unwrap_or(0.5);
         if npc.sex != NpcSex::Female {
             continue;
         }
         if pregnancy.is_some()
             || lifecycle.age_days < lifecycle.maturity_age
             || lifecycle.reproduction_cooldown > 0.0
-            || npc.health < 32.0
-            || needs.hunger > (0.74 - npc.reproduction_drive * 0.10).clamp(0.40, 0.82)
-            || needs.fatigue > (0.90 - npc.reproduction_drive * 0.08).clamp(0.55, 0.92)
-            || needs.safety < (0.18 - npc.risk_tolerance * 0.04).clamp(0.05, 0.22)
+            || npc.health < 28.0
+            || needs.hunger > (0.82 - npc.reproduction_drive * 0.10).clamp(0.48, 0.88)
+            || needs.fatigue > (0.94 - npc.reproduction_drive * 0.08).clamp(0.62, 0.94)
+            || needs.safety < (0.13 - npc.risk_tolerance * 0.04).clamp(0.03, 0.18)
+            || happiness < 0.18
         {
             continue;
         }
@@ -285,32 +310,33 @@ fn npc_reproduction(
             .unwrap_or(inventory.food);
         let social_resilience = npc.reproduction_drive * 0.22 + npc.risk_tolerance * 0.10;
         if home_security + social_resilience
-            < (0.62 - npc.reproduction_drive * 0.10).clamp(0.32, 0.62)
-            && needs.safety < 0.45
+            < (0.48 - npc.reproduction_drive * 0.10).clamp(0.22, 0.50)
+            && needs.safety < 0.32
         {
             continue;
         }
 
         let mother_pos = transform.translation.truncate();
-        let partner_match = partner_candidates
-            .iter()
-            .any(|(partner_entity, pos, partner_home)| {
-                if *partner_entity == entity {
-                    return false;
-                }
-                let distance = mother_pos.distance(*pos);
-                (home.shelter.is_some() && *partner_home == home.shelter && distance < 84.0)
-                    || distance < 56.0
-            });
-        if !partner_match {
+        let partner_match =
+            partner_candidates
+                .iter()
+                .find(|(partner_entity, pos, partner_home)| {
+                    if *partner_entity == entity {
+                        return false;
+                    }
+                    let distance = mother_pos.distance(*pos);
+                    (home.shelter.is_some() && *partner_home == home.shelter && distance < 108.0)
+                        || distance < 74.0
+                });
+        let Some((father, _, _)) = partner_match else {
             continue;
-        }
+        };
 
         let entity_seed = entity.to_bits() as f32;
         let cycle_days = (22.0 - npc.reproduction_drive * 6.0).clamp(10.0, 24.0);
         let phase = (step.elapsed_days + entity_seed * 0.37) % cycle_days;
-        let conception_window =
-            delta_days * (8.0 + lifecycle.fertility * 4.5 + npc.reproduction_drive * 3.0);
+        let conception_window = delta_days
+            * (12.0 + lifecycle.fertility * 5.5 + npc.reproduction_drive * 4.0 + happiness * 4.0);
         if phase > conception_window {
             continue;
         }
@@ -319,6 +345,9 @@ fn npc_reproduction(
             (120.0 - npc.reproduction_drive * 28.0).clamp(72.0, 120.0);
         commands.entity(entity).insert(NpcPregnancy {
             gestation_days: 280.0,
+            father: Some(*father),
+            home_culture: member.map(|member| member.faction),
+            birth_home: home.shelter,
         });
         writer.write(LogEvent::new(
             LogEventKind::Birth,
@@ -334,6 +363,8 @@ fn resolve_npc_births(
     mut commands: Commands,
     clock: Res<SimulationClock>,
     step: Res<SimulationStep>,
+    world_mind: Option<Res<WorldMind>>,
+    evolution: Option<Res<EvolutionPressure>>,
     mut population: ResMut<PopulationStats>,
     mut writer: MessageWriter<LogEvent>,
     mut npcs: Query<(
@@ -384,6 +415,32 @@ fn resolve_npc_births(
             NpcGender::Man
         };
         let child_seed = (birth_seed % 17) as f32 / 16.0;
+        let pressure = world_mind.as_ref().map(|mind| mind.pressure).unwrap_or(0.0);
+        let nurture = world_mind.as_ref().map(|mind| mind.nurture).unwrap_or(0.5);
+        let entropy = world_mind.as_ref().map(|mind| mind.entropy).unwrap_or(0.0);
+        let food_security_selection = (nurture - pressure * 0.35).clamp(-0.25, 0.35);
+        let shelter_selection = (pressure * 0.22 + nurture * 0.18).clamp(0.0, 0.42);
+        let curiosity_selection = (entropy * 0.26 + nurture * 0.10).clamp(0.0, 0.36);
+        let peace_selection = (nurture * 0.28 - pressure * 0.12).clamp(-0.10, 0.30);
+        let evo = evolution.as_ref();
+        let survival_selection = evo
+            .map(|pressure| pressure.survival_fitness - 0.5)
+            .unwrap_or(0.0);
+        let reproduction_selection = evo
+            .map(|pressure| pressure.reproduction_fitness - 0.5)
+            .unwrap_or(0.0);
+        let teaching_selection = evo
+            .map(|pressure| pressure.teaching_fitness - 0.5)
+            .unwrap_or(0.0);
+        let shelter_fitness_selection = evo
+            .map(|pressure| pressure.shelter_fitness - 0.5)
+            .unwrap_or(0.0);
+        let community_selection = evo
+            .map(|pressure| pressure.community_fitness - 0.5)
+            .unwrap_or(0.0);
+        let mutation = evo
+            .map(|pressure| pressure.mutation_rate * (child_seed - 0.5))
+            .unwrap_or(0.0);
         let inherited_personality = psyche
             .as_ref()
             .map(|psyche| psyche.personality)
@@ -420,10 +477,36 @@ fn resolve_npc_births(
         .with_identity(child_sex, child_gender)
         .with_tooling(0.1, 0.0)
         .with_drives(
-            (npc.reproduction_drive * 0.82 + 0.25 + child_seed * 0.22).clamp(0.1, 1.6),
-            (npc.discovery_drive * 0.78 + 0.20 + child_seed * 0.18).clamp(0.1, 1.6),
-            (npc.aggression_drive * 0.72 + child_seed * 0.30).clamp(0.0, 1.6),
-            (npc.risk_tolerance * 0.80 + 0.15 + child_seed * 0.16).clamp(0.0, 1.4),
+            (npc.reproduction_drive * 0.82
+                + 0.25
+                + child_seed * 0.22
+                + food_security_selection
+                + reproduction_selection * 0.30
+                + community_selection * 0.16
+                + mutation)
+                .clamp(0.1, 1.6),
+            (npc.discovery_drive * 0.78
+                + 0.20
+                + child_seed * 0.18
+                + curiosity_selection
+                + shelter_selection * 0.20
+                + teaching_selection * 0.34
+                + survival_selection * 0.14
+                + mutation * 0.8)
+                .clamp(0.1, 1.6),
+            (npc.aggression_drive * 0.72 + child_seed * 0.30
+                - peace_selection
+                - community_selection * 0.20
+                + mutation * 0.5)
+                .clamp(0.0, 1.6),
+            (npc.risk_tolerance * 0.80
+                + 0.15
+                + child_seed * 0.16
+                + shelter_selection * 0.35
+                + shelter_fitness_selection * 0.28
+                + survival_selection * 0.18
+                + mutation * 0.7)
+                .clamp(0.0, 1.4),
         )
         .with_personality(
             inherited_personality,
@@ -436,7 +519,21 @@ fn resolve_npc_births(
             0.10 + child_seed * 0.38,
         )
         .with_age_days(0.0);
-        commands.spawn((child_bundle, child_programs));
+        let sibling_count = population.npc_births as u32;
+        commands.spawn((
+            child_bundle,
+            child_programs,
+            Kinship {
+                mother: Some(entity),
+                father: pregnancy.father,
+                generation: evo
+                    .map(|pressure| pressure.generation_estimate.ceil() as u32)
+                    .unwrap_or(0),
+                home_culture: pregnancy.home_culture,
+                birth_home: pregnancy.birth_home,
+                siblings_at_birth: sibling_count,
+            },
+        ));
         if let Some(psyche) = psyche.as_mut() {
             psyche.reward_reproduction();
         }

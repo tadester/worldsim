@@ -9,9 +9,9 @@ use crate::agents::predator::Predator;
 use crate::magic::storage::{ManaAction, ManaPractice, ManaStorageStyle};
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::SimulationClock;
+use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::Campfire;
 use crate::world::resources::spawn_transient_effect;
-use crate::world::map::{MapSettings, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ManaReservoir {
@@ -209,28 +209,24 @@ fn resolve_npc_spellcasting(
     clock: Res<SimulationClock>,
     mut writer: MessageWriter<LogEvent>,
     mut npcs: ParamSet<(
-        Query<
-            (
-                Entity,
-                &Npc,
-                &Transform,
-                &NpcIntent,
-                &mut ManaReservoir,
-                &mut ManaPractice,
-                &mut Needs,
-                &mut Memory,
-                Option<&FactionMember>,
-            ),
-        >,
-        Query<
-            (
-                Entity,
-                &Transform,
-                &mut Npc,
-                &mut Needs,
-                Option<&FactionMember>,
-            ),
-        >,
+        Query<(
+            Entity,
+            &Npc,
+            &Transform,
+            &NpcIntent,
+            &mut ManaReservoir,
+            &mut ManaPractice,
+            &mut Needs,
+            &mut Memory,
+            Option<&FactionMember>,
+        )>,
+        Query<(
+            Entity,
+            &Transform,
+            &mut Npc,
+            &mut Needs,
+            Option<&FactionMember>,
+        )>,
     )>,
     mut predators: Query<(Entity, &Transform, &mut Predator)>,
     mut campfires: Query<(&Transform, &mut Campfire)>,
@@ -255,8 +251,17 @@ fn resolve_npc_spellcasting(
     let mut raid_bolt_plans = Vec::<(Entity, Vec2, f32)>::new();
     let mut heal_pulse_plans = Vec::<(Entity, Vec2, f32)>::new();
 
-    for (entity, npc, transform, intent, mut reservoir, mut practice, mut needs, mut memory, member) in
-        &mut npcs.p0()
+    for (
+        entity,
+        npc,
+        transform,
+        intent,
+        mut reservoir,
+        mut practice,
+        mut needs,
+        mut memory,
+        member,
+    ) in &mut npcs.p0()
     {
         if reservoir.stored <= 0.08 || practice.spell_cooldown > 0.0 {
             continue;
@@ -269,7 +274,9 @@ fn resolve_npc_spellcasting(
         if practice.fireball >= 0.35 && combat_mode && reservoir.stored > 0.18 {
             if let Some((_, target_pos, mut predator)) = predators
                 .iter_mut()
-                .filter(|(_, other_transform, _)| pos.distance(other_transform.translation.truncate()) < 110.0)
+                .filter(|(_, other_transform, _)| {
+                    pos.distance(other_transform.translation.truncate()) < 110.0
+                })
                 .min_by(|(_, a, _), (_, b, _)| {
                     pos.distance(a.translation.truncate())
                         .total_cmp(&pos.distance(b.translation.truncate()))
@@ -301,7 +308,9 @@ fn resolve_npc_spellcasting(
         if practice.gravity_well >= 0.35 && combat_mode && reservoir.stored > 0.16 {
             if let Some((_, target_pos, mut predator)) = predators
                 .iter_mut()
-                .filter(|(_, other_transform, _)| pos.distance(other_transform.translation.truncate()) < 90.0)
+                .filter(|(_, other_transform, _)| {
+                    pos.distance(other_transform.translation.truncate()) < 90.0
+                })
                 .min_by(|(_, a, _), (_, b, _)| {
                     pos.distance(a.translation.truncate())
                         .total_cmp(&pos.distance(b.translation.truncate()))
@@ -331,14 +340,17 @@ fn resolve_npc_spellcasting(
         if practice.root_snare >= 0.35 && combat_mode && reservoir.stored > 0.14 {
             if let Some((_, target_pos, mut predator)) = predators
                 .iter_mut()
-                .filter(|(_, other_transform, _)| pos.distance(other_transform.translation.truncate()) < 88.0)
+                .filter(|(_, other_transform, _)| {
+                    pos.distance(other_transform.translation.truncate()) < 88.0
+                })
                 .min_by(|(_, a, _), (_, b, _)| {
                     pos.distance(a.translation.truncate())
                         .total_cmp(&pos.distance(b.translation.truncate()))
                 })
             {
                 predator.attack_cooldown += 0.35 + practice.root_snare * 0.8;
-                predator.health = (predator.health - (3.0 + practice.root_snare * 4.0) * delta_days * 10.0)
+                predator.health = (predator.health
+                    - (3.0 + practice.root_snare * 4.0) * delta_days * 10.0)
                     .max(0.0);
                 reservoir.stored -= 0.10;
                 practice.spell_cooldown = 0.20;
@@ -396,7 +408,9 @@ fn resolve_npc_spellcasting(
                 }
             } else if let Some((_, target_pos, mut predator)) = predators
                 .iter_mut()
-                .filter(|(_, other_transform, _)| pos.distance(other_transform.translation.truncate()) < 105.0)
+                .filter(|(_, other_transform, _)| {
+                    pos.distance(other_transform.translation.truncate()) < 105.0
+                })
                 .min_by(|(_, a, _), (_, b, _)| {
                     pos.distance(a.translation.truncate())
                         .total_cmp(&pos.distance(b.translation.truncate()))
@@ -469,8 +483,8 @@ fn resolve_npc_spellcasting(
                     continue;
                 }
                 campfire.ember = (campfire.ember + 0.22 + practice.fireball * 0.22).min(1.0);
-                campfire.fuel = (campfire.fuel + 0.10 + practice.hearthspark * 0.08)
-                    .min(campfire.max_fuel);
+                campfire.fuel =
+                    (campfire.fuel + 0.10 + practice.hearthspark * 0.08).min(campfire.max_fuel);
                 kindled = true;
                 break;
             }
@@ -507,7 +521,10 @@ fn resolve_npc_spellcasting(
         }
 
         if practice.windstep >= 0.35
-            && matches!(intent.label.as_str(), "Flee" | "Retreat" | "Explore" | "Raid")
+            && matches!(
+                intent.label.as_str(),
+                "Flee" | "Retreat" | "Explore" | "Raid"
+            )
             && reservoir.stored > 0.07
         {
             needs.fatigue = (needs.fatigue - 0.06 - practice.windstep * 0.05).max(0.0);

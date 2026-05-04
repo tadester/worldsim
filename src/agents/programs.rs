@@ -15,9 +15,10 @@ use crate::world::director::WorldMind;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::proposals::{WorldActionLog, push_world_action};
 use crate::world::resources::{
-    spawn_transient_effect, CivicStructure, CivicStructureKind, Shelter, ShelterStockpile,
-    WorldStats,
+    CivicStructure, CivicStructureKind, Shelter, ShelterStockpile, WorldStats,
+    spawn_transient_effect,
 };
+use crate::world::settlement::Settlement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProgramId {
@@ -194,6 +195,12 @@ pub struct WorldProgramState {
     pub unlocked: Vec<ProgramId>,
     pub last_grant_day: f32,
     pub last_spawn_day: f32,
+    pub last_nurture_day: f32,
+    pub cold_discovery_pressure: f32,
+    pub hunger_discovery_pressure: f32,
+    pub care_discovery_pressure: f32,
+    pub defense_discovery_pressure: f32,
+    pub culture_pressure: f32,
     pub last_reason: String,
 }
 
@@ -203,6 +210,12 @@ impl Default for WorldProgramState {
             unlocked: Vec::new(),
             last_grant_day: -999.0,
             last_spawn_day: -999.0,
+            last_nurture_day: -999.0,
+            cold_discovery_pressure: 0.0,
+            hunger_discovery_pressure: 0.0,
+            care_discovery_pressure: 0.0,
+            defense_discovery_pressure: 0.0,
+            culture_pressure: 0.0,
             last_reason: "No world grants yet".to_string(),
         }
     }
@@ -220,8 +233,9 @@ impl Plugin for ProgramPlugin {
                     attach_known_programs,
                     npc_self_discover_programs,
                     cultural_learning_from_deaths,
-                    world_grant_emergency_programs,
-                    world_spawn_rescue_settlers.after(world_grant_emergency_programs),
+                    update_world_cultural_pressure,
+                    world_spawn_rescue_settlers.after(update_world_cultural_pressure),
+                    world_nurture_thriving_society.after(world_spawn_rescue_settlers),
                     build_society_projects,
                     advance_civic_projects.after(build_society_projects),
                     apply_known_program_effects,
@@ -285,6 +299,7 @@ fn npc_self_discover_programs(
         &crate::agents::inventory::Inventory,
         &mut KnownPrograms,
     )>,
+    state: Res<WorldProgramState>,
 ) {
     let delta_days = clock.delta_days();
     if delta_days <= 0.0 {
@@ -296,16 +311,18 @@ fn npc_self_discover_programs(
         let discovery = npc.discovery_drive
             * (needs.curiosity + (1.0 - needs.safety) * 0.35 + npc.exposure * 0.45)
             * delta_days
-            * 0.42;
+            * (0.42 + state.culture_pressure * 0.30);
 
         let candidates = [
             (
                 ProgramId::Firemaking,
-                needs.safety < 0.55 && npc.exposure > 0.25 && inventory.wood >= 0.35,
+                (needs.safety < 0.55 && npc.exposure > 0.25 && inventory.wood >= 0.35)
+                    || state.cold_discovery_pressure > 0.30,
             ),
             (
                 ProgramId::ShelterBuilding,
-                needs.safety < 0.58 && inventory.wood >= 0.8,
+                (needs.safety < 0.58 && inventory.wood >= 0.8)
+                    || state.cold_discovery_pressure > 0.46,
             ),
             (
                 ProgramId::Toolmaking,
@@ -313,11 +330,14 @@ fn npc_self_discover_programs(
             ),
             (
                 ProgramId::WarmClothing,
-                npc.exposure > 0.45 && programs.knows(ProgramId::ShelterBuilding),
+                (npc.exposure > 0.45 && programs.knows(ProgramId::ShelterBuilding))
+                    || state.cold_discovery_pressure > 0.55,
             ),
             (
                 ProgramId::FoodStorage,
-                inventory.food > 0.6 || inventory.wood > 0.8,
+                inventory.food > 0.6
+                    || inventory.wood > 0.8
+                    || state.hunger_discovery_pressure > 0.32,
             ),
             (
                 ProgramId::Woodworking,
@@ -325,15 +345,19 @@ fn npc_self_discover_programs(
             ),
             (
                 ProgramId::Childcare,
-                npc.reproduction_drive > 1.0 && needs.safety > 0.45,
+                (npc.reproduction_drive > 1.0 && needs.safety > 0.45)
+                    || state.care_discovery_pressure > 0.28,
             ),
             (
                 ProgramId::Watchkeeping,
-                needs.safety < 0.45 || npc.risk_tolerance > 0.8,
+                needs.safety < 0.45
+                    || npc.risk_tolerance > 0.8
+                    || state.defense_discovery_pressure > 0.34,
             ),
             (
                 ProgramId::PredatorDefense,
-                programs.knows(ProgramId::Watchkeeping) && npc.aggression_drive > 0.65,
+                (programs.knows(ProgramId::Watchkeeping) && npc.aggression_drive > 0.65)
+                    || state.defense_discovery_pressure > 0.58,
             ),
             (
                 ProgramId::Blacksmithing,
@@ -343,7 +367,8 @@ fn npc_self_discover_programs(
             ),
             (
                 ProgramId::Teaching,
-                programs.known.len() >= 8 && needs.social > 0.5,
+                (programs.known.len() >= 8 && needs.social > 0.5)
+                    || state.care_discovery_pressure > 0.50,
             ),
             (
                 ProgramId::Governance,
@@ -356,7 +381,8 @@ fn npc_self_discover_programs(
         ];
 
         for (program, eligible) in candidates {
-            if eligible && !programs.knows(program) && seed < discovery {
+            let pressure_bonus = program_pressure_bonus(program, &state);
+            if eligible && !programs.knows(program) && seed < discovery + pressure_bonus {
                 programs.learn(program);
                 let name = program_def(program)
                     .map(|def| def.name)
@@ -371,12 +397,40 @@ fn npc_self_discover_programs(
     }
 }
 
+fn program_pressure_bonus(program: ProgramId, state: &WorldProgramState) -> f32 {
+    match program {
+        ProgramId::Firemaking
+        | ProgramId::HearthKeeping
+        | ProgramId::WarmClothing
+        | ProgramId::ShelterBuilding
+        | ProgramId::ShelterRepair
+        | ProgramId::WeatherReading
+        | ProgramId::ManaWarding => state.cold_discovery_pressure * 0.08,
+        ProgramId::Foraging
+        | ProgramId::FoodStorage
+        | ProgramId::Cooking
+        | ProgramId::Agriculture
+        | ProgramId::SeedSaving
+        | ProgramId::AnimalHusbandry
+        | ProgramId::ManaAgriculture => state.hunger_discovery_pressure * 0.08,
+        ProgramId::Childcare
+        | ProgramId::Midwifery
+        | ProgramId::Teaching
+        | ProgramId::ConflictMediation
+        | ProgramId::Governance => state.care_discovery_pressure * 0.08,
+        ProgramId::Watchkeeping | ProgramId::PredatorDefense | ProgramId::FirstAid => {
+            state.defense_discovery_pressure * 0.08
+        }
+        _ => state.culture_pressure * 0.03,
+    }
+}
+
 fn cultural_learning_from_deaths(
     step: Res<SimulationStep>,
     deaths: Res<NpcDeathLog>,
+    mut state: ResMut<WorldProgramState>,
     mut world_actions: ResMut<WorldActionLog>,
     mut writer: MessageWriter<LogEvent>,
-    mut npcs: Query<(&Npc, &mut KnownPrograms)>,
 ) {
     let Some(death) = deaths.entries.last() else {
         return;
@@ -386,46 +440,44 @@ fn cultural_learning_from_deaths(
     }
 
     let programs = programs_for_death_reason(&death.reason);
-    let mut learned_count = 0usize;
-    for (npc, mut known) in &mut npcs {
-        if npc.name == death.npc_name {
-            continue;
+    for program in programs.iter().copied() {
+        if !state.unlocked.contains(&program) {
+            state.unlocked.push(program);
         }
-        for program in programs.iter().copied() {
-            if known.grant(
-                program,
-                &format!(
-                    "learned after {} died from {}",
-                    death.npc_name, death.reason
-                ),
-            ) {
-                learned_count += 1;
-                break;
-            }
-        }
+    }
+    if death.reason.contains("cold") || death.reason.contains("exposure") {
+        state.cold_discovery_pressure = (state.cold_discovery_pressure + 0.22).clamp(0.0, 1.0);
+    } else if death.reason.contains("starv") {
+        state.hunger_discovery_pressure = (state.hunger_discovery_pressure + 0.22).clamp(0.0, 1.0);
+    } else if death.reason.contains("predator")
+        || death.reason.contains("wound")
+        || death.reason.contains("injury")
+    {
+        state.defense_discovery_pressure =
+            (state.defense_discovery_pressure + 0.22).clamp(0.0, 1.0);
+    } else {
+        state.culture_pressure = (state.culture_pressure + 0.10).clamp(0.0, 1.0);
     }
 
-    if learned_count > 0 {
-        push_world_action(
-            &mut world_actions,
-            step.elapsed_days,
-            "Cultural adaptation",
-            format!(
-                "{} survivors learned from {} dying of {}",
-                learned_count, death.npc_name, death.reason
-            ),
-        );
-        writer.write(LogEvent::new(
-            LogEventKind::Discovery,
-            format!(
-                "{}'s death taught {} survivors new survival knowledge",
-                death.npc_name, learned_count
-            ),
-        ));
-    }
+    push_world_action(
+        &mut world_actions,
+        step.elapsed_days,
+        "Cultural pressure rose",
+        format!(
+            "{}'s death from {} changed what future minds are likely to discover",
+            death.npc_name, death.reason
+        ),
+    );
+    writer.write(LogEvent::new(
+        LogEventKind::Discovery,
+        format!(
+            "{}'s death raised cultural discovery pressure",
+            death.npc_name
+        ),
+    ));
 }
 
-fn world_grant_emergency_programs(
+fn update_world_cultural_pressure(
     step: Res<SimulationStep>,
     stats: Res<WorldStats>,
     population: Res<PopulationStats>,
@@ -434,7 +486,6 @@ fn world_grant_emergency_programs(
     mut world_mind: ResMut<WorldMind>,
     mut world_actions: ResMut<WorldActionLog>,
     mut writer: MessageWriter<LogEvent>,
-    mut npcs: Query<(&mut KnownPrograms, &Npc)>,
 ) {
     let recent_cold_deaths = deaths
         .entries
@@ -457,76 +508,129 @@ fn world_grant_emergency_programs(
         && generations_elapsed > 2.0
         && thriving_stalled;
 
-    let mut grants = Vec::new();
     let mut reason = None;
     if cold_emergency {
-        grants.extend([
-            ProgramId::Firemaking,
-            ProgramId::HearthKeeping,
-            ProgramId::WarmClothing,
-            ProgramId::ShelterBuilding,
-            ProgramId::ShelterRepair,
-            ProgramId::WeatherReading,
-            ProgramId::ManaWarding,
-        ]);
+        state.cold_discovery_pressure = (state.cold_discovery_pressure + 0.18).clamp(0.0, 1.0);
         reason = Some("cold deaths or exposure stress");
     }
     if population_emergency {
-        grants.extend([
-            ProgramId::Childcare,
-            ProgramId::Midwifery,
-            ProgramId::FirstAid,
-            ProgramId::ConflictMediation,
-            ProgramId::Teaching,
-        ]);
+        state.care_discovery_pressure = (state.care_discovery_pressure + 0.16).clamp(0.0, 1.0);
         reason = Some("population survival threshold");
     }
     if hunger_emergency {
-        grants.extend([
-            ProgramId::FoodStorage,
-            ProgramId::Cooking,
-            ProgramId::Agriculture,
-            ProgramId::SeedSaving,
-            ProgramId::AnimalHusbandry,
-            ProgramId::ManaAgriculture,
-        ]);
+        state.hunger_discovery_pressure = (state.hunger_discovery_pressure + 0.18).clamp(0.0, 1.0);
         reason = Some("food security threshold");
     }
 
-    let Some(reason) = reason else {
-        return;
-    };
-    if step.elapsed_days - state.last_grant_day < 1.0 {
-        return;
-    }
+    state.cold_discovery_pressure = (state.cold_discovery_pressure * 0.996).clamp(0.0, 1.0);
+    state.hunger_discovery_pressure = (state.hunger_discovery_pressure * 0.996).clamp(0.0, 1.0);
+    state.care_discovery_pressure = (state.care_discovery_pressure * 0.997).clamp(0.0, 1.0);
+    state.defense_discovery_pressure = (state.defense_discovery_pressure * 0.997).clamp(0.0, 1.0);
+    state.culture_pressure = (state.culture_pressure * 0.998
+        + (state.cold_discovery_pressure
+            + state.hunger_discovery_pressure
+            + state.care_discovery_pressure
+            + state.defense_discovery_pressure)
+            * 0.001)
+        .clamp(0.0, 1.0);
 
-    grants.sort_by_key(|id| *id as u8);
-    grants.dedup();
-    let mut granted_any = false;
-    for program in grants {
-        if !state.unlocked.contains(&program) {
-            state.unlocked.push(program);
-        }
-        for (mut known, _) in &mut npcs {
-            granted_any |= known.grant(program, reason);
-        }
-    }
-
-    if granted_any {
+    if let Some(reason) = reason {
         state.last_grant_day = step.elapsed_days;
         state.last_reason = reason.to_string();
-        world_mind.intent = format!("Program society for {reason}");
+        world_mind.intent = format!("Pressure culture toward solutions for {reason}");
         push_world_action(
             &mut world_actions,
             step.elapsed_days,
-            "World granted programs",
-            format!("Implemented emergency knowledge for {reason}"),
+            "Discovery pressure shifted",
+            format!("Raised discovery odds for {reason} without granting knowledge directly"),
         );
         writer.write(LogEvent::new(
             LogEventKind::Discovery,
-            format!("World granted emergency programs for {reason}"),
+            format!("World pressure now favors discoveries for {reason}"),
         ));
     }
+}
+
+fn world_nurture_thriving_society(
+    step: Res<SimulationStep>,
+    stats: Res<WorldStats>,
+    mut state: ResMut<WorldProgramState>,
+    mut world_mind: ResMut<WorldMind>,
+    mut world_actions: ResMut<WorldActionLog>,
+    mut writer: MessageWriter<LogEvent>,
+    mut regions: Query<&mut crate::world::map::RegionState>,
+) {
+    if stats.npcs == 0 || step.elapsed_days - state.last_nurture_day < 3.0 {
+        return;
+    }
+
+    let npc_count = stats.npcs.max(1) as f32;
+    let food_stores = stats.total_food_carried + stats.total_food_stockpiled;
+    let wood_stores = stats.total_wood_carried + stats.total_wood_stockpiled;
+    let food_gap = (npc_count * 0.85 - food_stores).max(0.0);
+    let wood_gap = (npc_count * 0.55 - wood_stores).max(0.0);
+    let housing_gap = stats.npcs.saturating_sub(stats.shelters * 2);
+    let climate_gap = stats.cold_stressed_npcs as f32 + stats.avg_npc_exposure * npc_count;
+    let danger_gap = stats.predators.saturating_sub((stats.npcs / 3).max(1)) as f32;
+    let should_nurture = food_gap > 0.0
+        || wood_gap > 0.0
+        || housing_gap > 0
+        || climate_gap > 1.2
+        || danger_gap > 0.0;
+
+    if !should_nurture {
+        return;
+    }
+
+    state.last_nurture_day = step.elapsed_days;
+    world_mind.stance = "Selecting".to_string();
+    world_mind.intent =
+        "Shift ecology and social incentives so better-adapted generations emerge".to_string();
+    world_mind.resource_bias =
+        (world_mind.resource_bias + food_gap * 0.015 + wood_gap * 0.010).clamp(0.70, 1.45);
+    world_mind.climate_bias = (world_mind.climate_bias - climate_gap * 0.002).clamp(-0.08, 0.08);
+    world_mind.nurture = (world_mind.nurture + 0.04).clamp(0.0, 1.0);
+
+    let forage_adaptation = (0.04 + food_gap * 0.012).clamp(0.0, 0.22);
+    let biomass_adaptation =
+        (0.020 + wood_gap * 0.010 + housing_gap as f32 * 0.008).clamp(0.0, 0.16);
+    for mut region in &mut regions {
+        if food_gap > 0.0 {
+            region.forage = (region.forage + forage_adaptation).min(region.forage_capacity);
+        }
+        if wood_gap > 0.0 || housing_gap > 0 {
+            region.tree_biomass =
+                (region.tree_biomass + biomass_adaptation).min(region.tree_biomass_capacity);
+        }
+    }
+
+    for program in [
+        ProgramId::FoodStorage,
+        ProgramId::Agriculture,
+        ProgramId::SeedSaving,
+        ProgramId::ShelterRepair,
+        ProgramId::Childcare,
+        ProgramId::Teaching,
+        ProgramId::ConflictMediation,
+    ] {
+        if !state.unlocked.contains(&program) {
+            state.unlocked.push(program);
+        }
+    }
+
+    push_world_action(
+        &mut world_actions,
+        step.elapsed_days,
+        "Selection pressure adjusted",
+        format!(
+            "Ecosystem and culture pressures shifted: food gap {:.1}, wood gap {:.1}, housing gap {}",
+            food_gap, wood_gap, housing_gap
+        ),
+    );
+    writer.write(LogEvent::new(
+        LogEventKind::Discovery,
+        "The world changed survival pressures for future generations".to_string(),
+    ));
 }
 
 fn world_spawn_rescue_settlers(
@@ -682,6 +786,7 @@ fn build_society_projects(
     )>,
     structures: Query<&CivicStructure>,
     faction_societies: Query<&FactionSociety>,
+    settlements: Query<&Settlement>,
 ) {
     society.stage =
         settlement_stage(stats.npcs, stats.shelters, stats.civic_structures).to_string();
@@ -722,7 +827,8 @@ fn build_society_projects(
     }
 
     let known_any = |program: ProgramId| {
-        npcs.iter().any(|(_, known, _, _, _, _, _)| known.knows(program))
+        npcs.iter()
+            .any(|(_, known, _, _, _, _, _)| known.knows(program))
     };
     let existing =
         |kind: CivicStructureKind| structures.iter().any(|structure| structure.kind == kind);
@@ -749,10 +855,15 @@ fn build_society_projects(
             )
         },
     );
-    let center = shelter_positions
+    let shelter_center = shelter_positions
         .iter()
         .fold(Vec2::ZERO, |sum, (_, pos, _)| sum + *pos)
         / shelter_positions.len().max(1) as f32;
+    let center = settlements
+        .iter()
+        .max_by(|a, b| a.population.cmp(&b.population))
+        .map(|settlement| settlement.center)
+        .unwrap_or(shelter_center);
     let layout_push = 12.0 + telekinesis_bias * 1.2;
     let defense_ring = 44.0 + warding_bias * 2.4 + hunt_bias * 2.0;
     let farm_reach = 50.0 + verdant_bias * 2.6;
@@ -766,14 +877,20 @@ fn build_society_projects(
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
         && !existing(CivicStructureKind::Fence)
     {
-        Some((CivicStructureKind::Fence, center + Vec2::new(0.0, -defense_ring)))
+        Some((
+            CivicStructureKind::Fence,
+            center + Vec2::new(0.0, -defense_ring),
+        ))
     } else if urgent_defense
         && stats.npcs >= 4
         && known_any(ProgramId::Watchkeeping)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.6
         && !existing(CivicStructureKind::WatchPost)
     {
-        Some((CivicStructureKind::WatchPost, center + Vec2::new(layout_push * 0.25, defense_ring + 6.0)))
+        Some((
+            CivicStructureKind::WatchPost,
+            center + Vec2::new(layout_push * 0.25, defense_ring + 6.0),
+        ))
     } else if stats.shelters >= 3
         && !existing(CivicStructureKind::Plaza)
         && faction_societies
@@ -787,57 +904,84 @@ fn build_society_projects(
             .iter()
             .any(|society| society.settlement_drive > 0.45)
     {
-        Some((CivicStructureKind::Road, center + Vec2::new(0.0, -22.0 - telekinesis_bias.min(10.0))))
+        Some((
+            CivicStructureKind::Road,
+            center + Vec2::new(0.0, -22.0 - telekinesis_bias.min(10.0)),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Woodworking)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
         && !existing(CivicStructureKind::Fence)
     {
-        Some((CivicStructureKind::Fence, center + Vec2::new(0.0, -defense_ring)))
+        Some((
+            CivicStructureKind::Fence,
+            center + Vec2::new(0.0, -defense_ring),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Agriculture)
         && verdant_bias > 0.7
         && stats.total_food_stockpiled + stats.total_food_carried > 1.8
         && !existing(CivicStructureKind::Farm)
     {
-        Some((CivicStructureKind::Farm, center + Vec2::new(-farm_reach, 26.0)))
+        Some((
+            CivicStructureKind::Farm,
+            center + Vec2::new(-farm_reach, 26.0),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Agriculture)
         && stats.total_food_stockpiled + stats.total_food_carried > 2.0
         && !existing(CivicStructureKind::Farm)
     {
-        Some((CivicStructureKind::Farm, center + Vec2::new(-farm_reach, 26.0)))
+        Some((
+            CivicStructureKind::Farm,
+            center + Vec2::new(-farm_reach, 26.0),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::AnimalHusbandry)
         && stats.animals >= 2
         && !existing(CivicStructureKind::Pasture)
     {
-        Some((CivicStructureKind::Pasture, center + Vec2::new(farm_reach + 2.0, 28.0)))
+        Some((
+            CivicStructureKind::Pasture,
+            center + Vec2::new(farm_reach + 2.0, 28.0),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Toolmaking)
         && (telekinesis_bias > 0.65 || hearth_bias > 0.65)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.8
         && !existing(CivicStructureKind::Workshop)
     {
-        Some((CivicStructureKind::Workshop, center + Vec2::new(forge_pull, 10.0)))
+        Some((
+            CivicStructureKind::Workshop,
+            center + Vec2::new(forge_pull, 10.0),
+        ))
     } else if stats.shelters >= 2
         && known_any(ProgramId::Toolmaking)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 3.2
         && !existing(CivicStructureKind::Workshop)
     {
-        Some((CivicStructureKind::Workshop, center + Vec2::new(forge_pull, 8.0)))
+        Some((
+            CivicStructureKind::Workshop,
+            center + Vec2::new(forge_pull, 8.0),
+        ))
     } else if stats.npcs >= 4
         && known_any(ProgramId::Childcare)
         && stats.total_food_stockpiled + stats.total_food_carried > 2.4
         && !existing(CivicStructureKind::Nursery)
     {
-        Some((CivicStructureKind::Nursery, center + Vec2::new(-28.0 + warding_bias * 0.8, 10.0)))
+        Some((
+            CivicStructureKind::Nursery,
+            center + Vec2::new(-28.0 + warding_bias * 0.8, 10.0),
+        ))
     } else if stats.npcs >= 4
         && known_any(ProgramId::Watchkeeping)
         && stats.total_wood_carried + stats.total_wood_stockpiled > 2.6
         && !existing(CivicStructureKind::WatchPost)
     {
-        Some((CivicStructureKind::WatchPost, center + Vec2::new(layout_push * 0.25, defense_ring + 6.0)))
+        Some((
+            CivicStructureKind::WatchPost,
+            center + Vec2::new(layout_push * 0.25, defense_ring + 6.0),
+        ))
     } else if stats.shelters >= 3
         && known_any(ProgramId::FoodStorage)
         && stats.total_food_stockpiled + stats.total_food_carried > 4.2
@@ -853,7 +997,10 @@ fn build_society_projects(
         && stats.total_ore > 1.6
         && !existing(CivicStructureKind::Forge)
     {
-        Some((CivicStructureKind::Forge, center + Vec2::new(forge_pull + 10.0, -18.0 - hearth_bias)))
+        Some((
+            CivicStructureKind::Forge,
+            center + Vec2::new(forge_pull + 10.0, -18.0 - hearth_bias),
+        ))
     } else if stats.shelters >= 5
         && known_any(ProgramId::Governance)
         && faction_societies.iter().any(|society| {
@@ -866,7 +1013,10 @@ fn build_society_projects(
         })
         && !existing(CivicStructureKind::TownHall)
     {
-        Some((CivicStructureKind::TownHall, center + Vec2::new(telekinesis_bias * 0.5, 0.0)))
+        Some((
+            CivicStructureKind::TownHall,
+            center + Vec2::new(telekinesis_bias * 0.5, 0.0),
+        ))
     } else {
         None
     };
@@ -1092,7 +1242,9 @@ fn advance_civic_projects(
                 .iter()
                 .filter(|(npc_pos, _, _, worker_faction)| {
                     pos.distance(*npc_pos) < 64.0
-                        && (faction.is_none() || *worker_faction == faction || worker_faction.is_none())
+                        && (faction.is_none()
+                            || *worker_faction == faction
+                            || worker_faction.is_none())
                 })
                 .take(3)
                 .enumerate()
@@ -1242,7 +1394,10 @@ fn spend_project_resources(
         .iter()
         .map(|(_, _, _, pile)| pile.ore)
         .sum::<f32>()
-        + npcs.iter().map(|(_, _, _, _, inv, _, _)| inv.ore).sum::<f32>();
+        + npcs
+            .iter()
+            .map(|(_, _, _, _, inv, _, _)| inv.ore)
+            .sum::<f32>();
     let total_metal = shelters
         .p1()
         .iter()

@@ -2,12 +2,13 @@ use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
 use crate::agents::inventory::Inventory;
+use crate::agents::npc::Npc;
 use crate::agents::predator::Predator;
 use crate::magic::mana::ManaReservoir;
 use crate::systems::simulation::{SimulationClock, SimulationStep};
 use crate::world::climate::RegionClimate;
 use crate::world::director::WorldMind;
-use crate::world::map::{MapSettings, RegionState, RegionTile};
+use crate::world::map::{BiomeKind, MapSettings, RegionState, RegionTile};
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Tree {
@@ -203,6 +204,7 @@ impl Plugin for WorldResourcesPlugin {
                 animate_transient_effects,
                 burn_campfires,
                 decay_shelter_integrity,
+                wear_region_paths_and_clearings,
                 regrow_region_resources,
                 update_world_stats,
             ),
@@ -318,12 +320,18 @@ fn attach_civic_structure_visuals(
                 CivicStructureFrame,
             ));
             parent.spawn((
-                Sprite::from_color(Color::srgba(0.86, 0.76, 0.46, 0.60), Vec2::new(body_size.x, 3.0)),
+                Sprite::from_color(
+                    Color::srgba(0.86, 0.76, 0.46, 0.60),
+                    Vec2::new(body_size.x, 3.0),
+                ),
                 Transform::from_xyz(0.0, body_size.y * 0.12, 0.3),
                 CivicStructureScaffold,
             ));
             parent.spawn((
-                Sprite::from_color(Color::srgba(0.98, 0.86, 0.42, 0.0), Vec2::new(body_size.x * 0.28, 4.0)),
+                Sprite::from_color(
+                    Color::srgba(0.98, 0.86, 0.42, 0.0),
+                    Vec2::new(body_size.x * 0.28, 4.0),
+                ),
                 Transform::from_xyz(-body_size.x * 0.28, -body_size.y * 0.10, 0.34),
                 CivicStructureWorkGlow,
             ));
@@ -575,6 +583,51 @@ fn burn_campfires(clock: Res<SimulationClock>, mut campfires: Query<&mut Campfir
     }
 }
 
+fn wear_region_paths_and_clearings(
+    clock: Res<SimulationClock>,
+    settings: Res<MapSettings>,
+    npcs: Query<&Transform, With<Npc>>,
+    shelters: Query<&Transform, With<Shelter>>,
+    civic_structures: Query<&Transform, With<CivicStructure>>,
+    mut regions: Query<(&RegionTile, &mut RegionState)>,
+) {
+    let delta_days = clock.delta_days();
+    if delta_days <= 0.0 {
+        return;
+    }
+
+    let mut footfall = std::collections::HashMap::<IVec2, f32>::new();
+    for transform in &npcs {
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        *footfall.entry(coord).or_default() += 1.0;
+    }
+
+    let mut clearings = std::collections::HashMap::<IVec2, f32>::new();
+    for transform in &shelters {
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        *clearings.entry(coord).or_default() += 0.55;
+    }
+    for transform in &civic_structures {
+        let coord = settings.tile_coord_for_position(transform.translation.truncate());
+        *clearings.entry(coord).or_default() += 0.80;
+    }
+
+    for (tile, mut state) in &mut regions {
+        let wear_gain = footfall.get(&tile.coord).copied().unwrap_or(0.0) * delta_days * 0.018;
+        let clearing_gain = clearings.get(&tile.coord).copied().unwrap_or(0.0) * delta_days * 0.012;
+        state.path_wear = (state.path_wear * (1.0 - delta_days * 0.001).clamp(0.98, 1.0)
+            + wear_gain)
+            .clamp(0.0, 1.0);
+        state.settlement_clearance = (state.settlement_clearance + clearing_gain).clamp(0.0, 1.0);
+        if state.settlement_clearance > 0.15 {
+            let clearing = state.settlement_clearance;
+            state.tree_biomass = (state.tree_biomass - clearing * delta_days * 0.006).max(0.0);
+            state.forage =
+                (state.forage + clearing * delta_days * 0.012).min(state.forage_capacity);
+        }
+    }
+}
+
 fn decay_shelter_integrity(
     clock: Res<SimulationClock>,
     settings: Res<MapSettings>,
@@ -611,7 +664,15 @@ fn regrow_region_resources(
         .unwrap_or(1.0);
 
     for (tile, climate, mut state) in &mut regions {
-        let suitability = (1.0 - climate.pressure * 0.75).clamp(0.15, 1.0);
+        let biome_growth = match tile.biome {
+            BiomeKind::Water => 0.45,
+            BiomeKind::Highland => 0.62,
+            BiomeKind::Dryland => 0.70,
+            BiomeKind::Wetland => 1.18,
+            BiomeKind::Forest => 1.12,
+            BiomeKind::Meadow => 1.0,
+        };
+        let suitability = ((1.0 - climate.pressure * 0.75) * biome_growth).clamp(0.15, 1.15);
         let forage_growth = (0.08 + tile.soil_fertility * 0.10 + tile.temperature * 0.02)
             * suitability
             * resource_bias

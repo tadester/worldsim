@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::agents::animal::Animal;
 use crate::agents::decisions::NpcIntent;
+use crate::agents::evolution::EvolutionPressure;
 use crate::agents::npc::{Npc, NpcCondition};
 use crate::systems::logging::{LogEvent, LogEventKind};
 use crate::systems::simulation::{SimulationClock, SimulationStep};
@@ -190,15 +191,27 @@ fn sync_predator_visuals(
     predators: Query<(&Predator, &Children)>,
     mut bodies: Query<
         (&mut Sprite, &mut Transform),
-        (With<PredatorBody>, Without<PredatorHead>, Without<PredatorClaw>),
+        (
+            With<PredatorBody>,
+            Without<PredatorHead>,
+            Without<PredatorClaw>,
+        ),
     >,
     mut heads: Query<
         (&mut Sprite, &mut Transform),
-        (With<PredatorHead>, Without<PredatorBody>, Without<PredatorClaw>),
+        (
+            With<PredatorHead>,
+            Without<PredatorBody>,
+            Without<PredatorClaw>,
+        ),
     >,
     mut claws: Query<
         &mut Transform,
-        (With<PredatorClaw>, Without<PredatorBody>, Without<PredatorHead>),
+        (
+            With<PredatorClaw>,
+            Without<PredatorBody>,
+            Without<PredatorHead>,
+        ),
     >,
 ) {
     let phase = step.elapsed_days * 24.0;
@@ -212,18 +225,18 @@ fn sync_predator_visuals(
             phase.sin() * 0.25
         };
         let body_color = match predator.ability {
-            PredatorAbility::Blink => {
-                Color::srgb(0.28 + hunger * 0.08, 0.14, 0.26 + mana_glow)
-            }
+            PredatorAbility::Blink => Color::srgb(0.28 + hunger * 0.08, 0.14, 0.26 + mana_glow),
             PredatorAbility::Thornhide => {
                 Color::srgb(0.24 + mana_glow * 0.2, 0.26 + mana_glow * 0.4, 0.14)
             }
             PredatorAbility::DreadHowl => {
                 Color::srgb(0.22 + mana_glow * 0.2, 0.10, 0.10 + mana_glow * 0.5)
             }
-            PredatorAbility::ManaFangs => {
-                Color::srgb(0.18 + mana_glow * 0.3, 0.12 + health_ratio * 0.08, 0.30 + mana_glow)
-            }
+            PredatorAbility::ManaFangs => Color::srgb(
+                0.18 + mana_glow * 0.3,
+                0.12 + health_ratio * 0.08,
+                0.30 + mana_glow,
+            ),
             PredatorAbility::None => {
                 Color::srgb(0.34 + hunger * 0.12, 0.10 + health_ratio * 0.10, 0.10)
             }
@@ -255,11 +268,12 @@ fn sync_predator_visuals(
             }
             if let Ok((mut sprite, mut transform)) = heads.get_mut(child) {
                 sprite.color = head_color;
-                transform.translation.x = 9.0 + if predator.ability == PredatorAbility::Blink {
-                    hunt_cycle * 2.4
-                } else {
-                    hunt_cycle * 0.6
-                };
+                transform.translation.x = 9.0
+                    + if predator.ability == PredatorAbility::Blink {
+                        hunt_cycle * 2.4
+                    } else {
+                        hunt_cycle * 0.6
+                    };
                 transform.translation.y = 2.0
                     + if predator.ability == PredatorAbility::DreadHowl {
                         hunt_cycle.abs() * 3.6
@@ -546,13 +560,27 @@ fn escalate_predator_pressure(
     step: Res<SimulationStep>,
     settings: Res<MapSettings>,
     stats: Res<WorldStats>,
+    evolution: Option<Res<EvolutionPressure>>,
     mut pressure: ResMut<PredatorPressure>,
     predators: Query<Entity, With<Predator>>,
     tiles: Query<(&RegionTile, &Transform)>,
     mut writer: MessageWriter<LogEvent>,
 ) {
+    let flourishing = evolution
+        .as_ref()
+        .map(|pressure| {
+            (pressure.survival_fitness + pressure.community_fitness + pressure.happiness_fitness)
+                / 3.0
+        })
+        .unwrap_or(0.5);
+    let minimum_pressure = if stats.npcs <= 3 || flourishing < 0.34 {
+        1
+    } else {
+        3
+    };
     let desired =
-        (3 + stats.shelters / 2 + stats.civic_structures / 3 + stats.npcs / 8).clamp(3, 12);
+        (minimum_pressure + stats.shelters / 3 + stats.civic_structures / 4 + stats.npcs / 10)
+            .clamp(minimum_pressure, 10);
     let current = predators.iter().count();
     if current >= desired || step.elapsed_days - pressure.last_spawn_day < 18.0 {
         return;

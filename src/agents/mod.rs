@@ -1,7 +1,9 @@
 pub mod animal;
 pub mod decisions;
+pub mod evolution;
 pub mod factions;
 pub mod inventory;
+pub mod kinship;
 pub mod memory;
 pub mod mind;
 pub mod needs;
@@ -15,7 +17,9 @@ pub mod society;
 use animal::AnimalPlugin;
 use bevy::prelude::*;
 use decisions::DecisionPlugin;
+use evolution::EvolutionPlugin;
 use factions::FactionPlugin;
+use kinship::KinshipPlugin;
 use memory::MemoryPlugin;
 use mind::NpcMindPlugin;
 use needs::NeedsPlugin;
@@ -36,6 +40,8 @@ impl Plugin for AgentsPlugin {
             PersonalityPlugin,
             PredatorPlugin,
             FactionPlugin,
+            EvolutionPlugin,
+            KinshipPlugin,
             NeedsPlugin,
             MemoryPlugin,
             RelationshipsPlugin,
