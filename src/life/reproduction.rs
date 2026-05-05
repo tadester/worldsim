@@ -325,8 +325,8 @@ fn npc_reproduction(
                         return false;
                     }
                     let distance = mother_pos.distance(*pos);
-                    (home.shelter.is_some() && *partner_home == home.shelter && distance < 108.0)
-                        || distance < 74.0
+                    (home.shelter.is_some() && *partner_home == home.shelter && distance < 240.0)
+                        || distance < 220.0
                 });
         let Some((father, _, _)) = partner_match else {
             continue;
@@ -336,7 +336,7 @@ fn npc_reproduction(
         let cycle_days = (22.0 - npc.reproduction_drive * 6.0).clamp(10.0, 24.0);
         let phase = (step.elapsed_days + entity_seed * 0.37) % cycle_days;
         let conception_window = delta_days
-            * (12.0 + lifecycle.fertility * 5.5 + npc.reproduction_drive * 4.0 + happiness * 4.0);
+            * (18.0 + lifecycle.fertility * 7.0 + npc.reproduction_drive * 5.5 + happiness * 6.0);
         if phase > conception_window {
             continue;
         }
@@ -463,7 +463,7 @@ fn resolve_npc_births(
             child_programs.last_grant_reason = format!("Inherited from {}", npc.name);
         }
 
-        let child_bundle = NpcBundle::new(
+        let mut child_bundle = NpcBundle::new(
             transform.translation.truncate() + offset,
             child_name,
             (npc.health * 0.72).clamp(34.0, 60.0),
@@ -519,6 +519,7 @@ fn resolve_npc_births(
             0.10 + child_seed * 0.38,
         )
         .with_age_days(0.0);
+        child_bundle.home.shelter = pregnancy.birth_home;
         let sibling_count = population.npc_births as u32;
         commands.spawn((
             child_bundle,

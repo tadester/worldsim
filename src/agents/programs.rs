@@ -328,6 +328,21 @@ fn npc_self_discover_programs(
                     || state.hunger_discovery_pressure > 0.32,
             ),
             (
+                ProgramId::SeedSaving,
+                intent_like_food_pressure(inventory.food, state.hunger_discovery_pressure, 0.36),
+            ),
+            (
+                ProgramId::Agriculture,
+                programs.knows(ProgramId::SeedSaving)
+                    || state.hunger_discovery_pressure > 0.46
+                    || (inventory.seeds > 0.12 && needs.hunger > 0.45),
+            ),
+            (
+                ProgramId::Cooking,
+                programs.knows(ProgramId::Firemaking)
+                    && (inventory.food > 0.4 || state.hunger_discovery_pressure > 0.42),
+            ),
+            (
                 ProgramId::Woodworking,
                 programs.knows(ProgramId::Toolmaking) && inventory.wood > 0.7,
             ),
@@ -383,6 +398,10 @@ fn npc_self_discover_programs(
             }
         }
     }
+}
+
+fn intent_like_food_pressure(food: f32, pressure: f32, threshold: f32) -> bool {
+    food > 0.35 || pressure > threshold
 }
 
 fn program_pressure_bonus(program: ProgramId, state: &WorldProgramState) -> f32 {
@@ -1409,6 +1428,13 @@ fn apply_known_program_effects(
     }
 
     for (programs, mut npc, mut needs, mut inventory, mut mana, mut practice) in &mut npcs {
+        if programs.knows(ProgramId::Foraging) {
+            needs.hunger = (needs.hunger - delta_days * 0.026).max(0.0);
+        }
+        if programs.knows(ProgramId::WaterFinding) {
+            needs.thirst = (needs.thirst - delta_days * 0.040).max(0.0);
+            needs.fatigue = (needs.fatigue - delta_days * 0.004).max(0.0);
+        }
         if programs.knows(ProgramId::WarmClothing) {
             npc.exposure = (npc.exposure - delta_days * 0.035).max(0.0);
         }
@@ -1516,7 +1542,7 @@ fn materialize_resource_chains(
 
         if intent.label == "Forage" {
             if programs.knows(ProgramId::SeedSaving) || programs.knows(ProgramId::Agriculture) {
-                inventory.seeds += delta_days * (0.05 + fertility * 0.08);
+                inventory.seeds += delta_days * (0.08 + fertility * 0.14);
             }
             if programs.knows(ProgramId::Weaving) {
                 inventory.fiber += delta_days * (0.04 + forage * 0.05);
@@ -1535,9 +1561,11 @@ fn materialize_resource_chains(
             && fertility > 0.42
             && (intent.label == "Forage" || intent.label == "Stockpile")
         {
-            let planted = (delta_days * 0.04).min(inventory.seeds);
+            let planted = (delta_days * 0.08).min(inventory.seeds);
             inventory.seeds -= planted * 0.55;
-            inventory.food += planted * (1.5 + fertility);
+            inventory.food =
+                (inventory.food + planted * (2.1 + fertility * 1.4)).min(inventory.max_food);
+            needs.hunger = (needs.hunger - planted * 0.55).max(0.0);
         }
 
         if programs.knows(ProgramId::Weaving) && inventory.fiber > 0.16 {

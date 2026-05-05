@@ -5,6 +5,7 @@ use crate::agents::animal::{Animal, AnimalLifeStage, Pregnancy};
 use crate::agents::decisions::NpcIntent;
 use crate::agents::factions::{Faction, FactionMember};
 use crate::agents::inventory::Inventory;
+use crate::agents::kinship::Kinship;
 use crate::agents::memory::Memory;
 use crate::agents::mind::NpcMind;
 use crate::agents::needs::Needs;
@@ -21,6 +22,7 @@ use crate::ui::DiagnosticsSettingsPane;
 use crate::world::climate::RegionClimate;
 use crate::world::map::{MapSettings, RegionTile};
 use crate::world::resources::{CivicStructure, Shelter, ShelterStockpile, Tree, TreeStage};
+use crate::world::settlement::{Settlement, SettlementMember};
 use crate::world::territory::Territory;
 
 #[derive(Resource, Default)]
@@ -175,6 +177,7 @@ fn update_inspector(
         Option<&FactionMember>,
     )>,
     civic_structures: Query<(&CivicStructure, &Transform)>,
+    settlements: Query<&Settlement>,
     animals: Query<(&Animal, &Lifecycle, &Transform, Option<&Pregnancy>)>,
     predators: Query<(&Predator, &Transform)>,
     factions: Query<&Faction>,
@@ -199,6 +202,7 @@ fn update_inspector(
         Option<&NpcPsyche>,
         Option<&KnownPrograms>,
     )>,
+    kinships: Query<(Option<&Kinship>, Option<&SettlementMember>), With<Npc>>,
     mut query: Query<&mut Text, With<InspectorText>>,
 ) {
     let body = if let Some(entity) = selected.entity {
@@ -429,9 +433,42 @@ fn update_inspector(
                     )
                 })
                 .unwrap_or_else(|| "Psyche: not initialized".to_string());
+            let (kinship, settlement_member) = kinships.get(entity).unwrap_or((None, None));
+            let kinship_line = kinship
+                .map(|kinship| {
+                    let culture = kinship
+                        .home_culture
+                        .and_then(|faction| factions.get(faction).ok())
+                        .map(|faction| faction.name.as_str())
+                        .unwrap_or("none");
+                    format!(
+                        "Kinship: gen {} | mother {:?} | father {:?}\nBirth culture: {} | birth home: {:?} | siblings then {}",
+                        kinship.generation,
+                        kinship.mother,
+                        kinship.father,
+                        culture,
+                        kinship.birth_home,
+                        kinship.siblings_at_birth
+                    )
+                })
+                .unwrap_or_else(|| "Kinship: founder / unknown".to_string());
+            let settlement_line = settlement_member
+                .and_then(|membership| settlements.get(membership.settlement).ok())
+                .map(|settlement| {
+                    format!(
+                        "Settlement: {} | pop {} | L{} | happy {:.2} | food {:.2} | house {:.2}",
+                        settlement.name,
+                        settlement.population,
+                        settlement.civic_level,
+                        settlement.happiness,
+                        settlement.food_security,
+                        settlement.housing_security
+                    )
+                })
+                .unwrap_or_else(|| "Settlement: none".to_string());
 
             format!(
-                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\n{}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nCraft S/Fi/Hi/O/M/C/W: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\nDiscipline: {} | control {:.2} | dominant {}\nAbilities ({}) {}\nSpells: {}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
+                "Type: NPC\nName: {}\nSex/Gender: {} / {}\nAge: {:.0}y / mature {:.0}y\nFaction: {}\n{}\n{}\n{}\nTile: {},{}\nTerritory: {}\n{}\n{}\n{}\n{}\nHealth: {:.1}\nAction: {}\nTarget: {}\nHeading: {:.2},{:.2}\nTop needs: {}\nBlocked: {}\nNeeds H/T/F/S/Soc/C: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nCooldowns: reproduction {:.1}d\nFertility: {:.2}\nReproduction: drive {:.2} | {}\nDrives D/A/Risk: {:.2}/{:.2}/{:.2}\nCarry F/W: {:.1}/{:.1}\nCraft S/Fi/Hi/O/M/C/W: {:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}/{:.1}\nTools K/T: {:.2}/{:.2}\nExposure: {:.2}\nMana: {:.1}/{:.1}\nDiscipline: {} | control {:.2} | dominant {}\nAbilities ({}) {}\nSpells: {}\n{}\nInsight: {}\nPos: {:.0}, {:.0}",
                 npc.name,
                 npc.sex.label(),
                 npc.gender.label(),
@@ -439,6 +476,8 @@ fn update_inspector(
                 lifecycle.maturity_age / 365.0,
                 faction_line,
                 governance_line,
+                settlement_line,
+                kinship_line,
                 coord.x,
                 coord.y,
                 territory_line,

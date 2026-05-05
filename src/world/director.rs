@@ -97,9 +97,9 @@ fn update_world_mind(
     mind.pressure = mind.pressure * 0.70 + next_pressure * 0.30;
     mind.nurture = mind.nurture * 0.75 + next_nurture * 0.25;
     mind.entropy = mind.entropy * 0.80 + next_entropy * 0.20;
-    mind.resource_bias = (1.08 - mind.pressure * 0.28 + mind.nurture * 0.16).clamp(0.70, 1.28);
+    mind.resource_bias = (1.10 - mind.pressure * 0.16 + mind.nurture * 0.28).clamp(0.78, 1.45);
     mind.climate_bias =
-        (mind.pressure * 0.035 + mind.entropy * 0.025 - mind.nurture * 0.020).clamp(-0.04, 0.08);
+        (mind.pressure * 0.012 + mind.entropy * 0.010 - mind.nurture * 0.060).clamp(-0.08, 0.04);
     mind.focus_coord = focus_coord(&settings, step.tick);
 
     let (stance, intent) = if mind.pressure > 0.72 {

@@ -120,14 +120,14 @@ fn seed_predators(
     settings: Res<MapSettings>,
     tiles: Query<(&RegionTile, &Transform)>,
 ) {
-    let desired = ((settings.width * settings.height) as usize / 80).clamp(3, 7);
+    let desired = ((settings.width * settings.height) as usize / 150).clamp(1, 3);
     let settler_band = settings.height / 2;
     let mut candidates = tiles
         .iter()
         .filter(|(tile, _)| {
             tile.mana_density > 0.65
                 && tile.soil_fertility < 0.7
-                && (tile.coord.y - settler_band).abs() >= 3
+                && (tile.coord.y - settler_band).abs() >= 4
         })
         .map(|(tile, transform)| (tile.mana_density, transform.translation.truncate()))
         .collect::<Vec<_>>();
@@ -574,13 +574,13 @@ fn escalate_predator_pressure(
         })
         .unwrap_or(0.5);
     let minimum_pressure = if stats.npcs <= 3 || flourishing < 0.34 {
-        1
+        0
     } else {
-        3
+        1
     };
     let desired =
-        (minimum_pressure + stats.shelters / 3 + stats.civic_structures / 4 + stats.npcs / 10)
-            .clamp(minimum_pressure, 10);
+        (minimum_pressure + stats.shelters / 4 + stats.civic_structures / 5 + stats.npcs / 14)
+            .clamp(minimum_pressure, 7);
     let current = predators.iter().count();
     if current >= desired || step.elapsed_days - pressure.last_spawn_day < 18.0 {
         return;

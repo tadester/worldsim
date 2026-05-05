@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::agents::evolution::EvolutionPressure;
 use crate::agents::factions::Faction;
 use crate::agents::programs::{SocietyProgress, WorldProgramState};
 use crate::agents::society::{DiplomacyState, FactionSociety};
@@ -11,6 +12,7 @@ use crate::world::climate::{ClimateEventState, ClimateModel};
 use crate::world::director::WorldMind;
 use crate::world::proposals::WorldProposalQueue;
 use crate::world::resources::WorldStats;
+use crate::world::settlement::Settlement;
 use crate::world::territory::Territory;
 
 #[derive(Component)]
@@ -30,6 +32,9 @@ pub struct TrendSample {
     pub npcs: usize,
     pub births: usize,
     pub deaths: usize,
+    pub happiness: f32,
+    pub food_security: f32,
+    pub civic_level: f32,
 }
 
 pub struct DashboardPlugin;
@@ -75,10 +80,14 @@ fn update_dashboard_text(
     trends: Res<TrendHistory>,
     world_mind: Res<WorldMind>,
     programs: Res<WorldProgramState>,
+    evolution: Res<EvolutionPressure>,
     society: Res<SocietyProgress>,
     proposals: Res<WorldProposalQueue>,
-    factions: Query<(Entity, &Faction, Option<&FactionSociety>)>,
-    territories: Query<&Territory>,
+    mut world_queries: ParamSet<(
+        Query<(Entity, &Faction, Option<&FactionSociety>)>,
+        Query<&Settlement>,
+        Query<&Territory>,
+    )>,
     diplomacy: Res<DiplomacyState>,
     mut text_query: Query<&mut Text, With<DashboardText>>,
 ) {
@@ -94,9 +103,9 @@ fn update_dashboard_text(
             )
         })
         .unwrap_or_else(|| "No events yet".to_string());
-    let trend_line = {
+    let population_trend_line = {
         let sample_count = trends.samples.len();
-        let start = sample_count.saturating_sub(4);
+        let start = sample_count.saturating_sub(6);
         let mut line = String::new();
         for (index, sample) in trends.samples[start..].iter().enumerate() {
             if index > 0 {
@@ -111,6 +120,11 @@ fn update_dashboard_text(
         }
         line
     };
+    let birth_graph = sparkline(trends.samples.iter().map(|sample| sample.births as f32));
+    let death_graph = sparkline(trends.samples.iter().map(|sample| sample.deaths as f32));
+    let happiness_graph = sparkline(trends.samples.iter().map(|sample| sample.happiness));
+    let food_graph = sparkline(trends.samples.iter().map(|sample| sample.food_security));
+    let civic_graph = sparkline(trends.samples.iter().map(|sample| sample.civic_level));
     let recent_births = trends
         .samples
         .last()
@@ -140,7 +154,7 @@ fn update_dashboard_text(
     let mut claimed_tiles = 0usize;
     let mut contested_tiles = 0usize;
     let mut total_tiles = 0usize;
-    for territory in &territories {
+    for territory in &world_queries.p2() {
         total_tiles += 1;
         if territory.contested {
             contested_tiles += 1;
@@ -150,6 +164,7 @@ fn update_dashboard_text(
             *territory_counts.entry(owner).or_insert(0) += 1;
         }
     }
+    let factions = world_queries.p0();
     let mut faction_split = territory_counts
         .into_iter()
         .filter_map(|(entity, count)| {
@@ -176,10 +191,26 @@ fn update_dashboard_text(
         .values()
         .filter(|pair| pair.hostility > 0.55 && !pair.at_war)
         .count();
+    let mut settlement_lines = world_queries
+        .p1()
+        .iter()
+        .map(|settlement| {
+            format!(
+                "{} pop {} L{} happy {:.2} food {:.2} house {:.2}",
+                settlement.name,
+                settlement.population,
+                settlement.civic_level,
+                settlement.happiness,
+                settlement.food_security,
+                settlement.housing_security
+            )
+        })
+        .collect::<Vec<_>>();
+    settlement_lines.sort();
 
     for mut text in &mut text_query {
         *text = Text::new(format!(
-            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAnimal load: {:.2}x\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nClimate event: {}\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nLive births: {} (animals {} | npcs {})\nLive deaths: {} (animals {} | npcs {})\nNet growth: {:+}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nLatest: {}",
+            "Ticks: {}\nDays: {:.2}\nSpeed: {}{}\nTrees: {}\nAnimals: {}\nPredators: {}\nNPCs: {}\nShelters: {}\nTerritory: {}/{} ({} contested){}\nAvg mana: {:.2}\nAvg animal cap: {:.2}\nAnimal load: {:.2}x\nAvg tree cap: {:.2}\nAvg temp: {:.2}\nSeason: {} day {:.1}/{:.0} (offset {:+.2})\nClimate event: {}\nAvg pressure: {:.2}\nForage: {:.1}\nTree biomass: {:.1}\nFood carried: {:.1}\nWood carried: {:.1}\nFood stockpiled: {:.1}\nWood stockpiled: {:.1}\nLive births: {} (animals {} | npcs {})\nLive deaths: {} (animals {} | npcs {})\nNet growth: {:+}\nRecent births: {}\nRecent deaths: {}\nTrend T/A/N: {}\nGraphs B/D/H/F/C: {} / {} / {} / {} / {}\nLatest: {}",
             step.tick,
             step.elapsed_days,
             clock.speed_label(),
@@ -223,15 +254,20 @@ fn update_dashboard_text(
             population.net_growth(),
             recent_births,
             recent_deaths,
-            if trend_line.is_empty() {
+            if population_trend_line.is_empty() {
                 "No samples yet"
             } else {
-                &trend_line
+                &population_trend_line
             },
+            birth_graph,
+            death_graph,
+            happiness_graph,
+            food_graph,
+            civic_graph,
             latest
         ));
         text.0.push_str(&format!(
-            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nEconomy: ore {:.1} | metal {:.1} | clothing {:.1} | weapons {:.1}\nFood web: carried {:.1} stockpiled {:.1} | wood carried {:.1} stockpiled {:.1}\nUI parity: inspector click-select | civic/farm/pasture visible | clothing/tools visible\nDiplomacy: wars {} | feuds {}\nWorld programs: {} unlocked | last: {}\nDeveloper proposals: {}{}",
+            "\nWorld mind: {} | {}\nWorld pressure/nurture/entropy: {:.2}/{:.2}/{:.2}\nWorld focus: {},{} | {}\nEvolution S/R/T/Sh/C/H mut: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2} {:.2}\nDiscovery pressure cold/hunger/care/def/culture: {:.2}/{:.2}/{:.2}/{:.2}/{:.2}\nSettlements: {}\nNPC exposure: avg {:.2}, cold stressed {}\nSociety: {} | civic {} | last project: {}\nEconomy: ore {:.1} | metal {:.1} | clothing {:.1} | weapons {:.1}\nFood web: carried {:.1} stockpiled {:.1} | wood carried {:.1} stockpiled {:.1}\nUI parity: inspector click-select | civic/farm/pasture visible | clothing/tools visible\nDiplomacy: wars {} | feuds {}\nWorld programs: {} pressure-unlocked | last: {}\nDeveloper proposals: {}{}",
             world_mind.stance,
             world_mind.intent,
             world_mind.pressure,
@@ -240,6 +276,23 @@ fn update_dashboard_text(
             world_mind.focus_coord.x,
             world_mind.focus_coord.y,
             world_mind.thought,
+            evolution.survival_fitness,
+            evolution.reproduction_fitness,
+            evolution.teaching_fitness,
+            evolution.shelter_fitness,
+            evolution.community_fitness,
+            evolution.happiness_fitness,
+            evolution.mutation_rate,
+            programs.cold_discovery_pressure,
+            programs.hunger_discovery_pressure,
+            programs.care_discovery_pressure,
+            programs.defense_discovery_pressure,
+            programs.culture_pressure,
+            if settlement_lines.is_empty() {
+                "none".to_string()
+            } else {
+                settlement_lines.join(" | ")
+            },
             stats.avg_npc_exposure,
             stats.cold_stressed_npcs,
             society.stage,
@@ -272,6 +325,7 @@ fn update_trend_history(
     step: Res<SimulationStep>,
     stats: Res<WorldStats>,
     log: Res<EventLog>,
+    settlements: Query<&Settlement>,
     mut trends: ResMut<TrendHistory>,
 ) {
     if clock.paused {
@@ -302,6 +356,18 @@ fn update_trend_history(
         }
     }
 
+    let settlement_count = settlements.iter().count().max(1) as f32;
+    let (happiness, food_security, civic_level) =
+        settlements
+            .iter()
+            .fold((0.0, 0.0, 0.0), |(happiness, food, civic), settlement| {
+                (
+                    happiness + settlement.happiness,
+                    food + settlement.food_security,
+                    civic + settlement.civic_level as f32,
+                )
+            });
+
     trends.samples.push(TrendSample {
         day: step.elapsed_days,
         trees: stats.trees,
@@ -309,12 +375,38 @@ fn update_trend_history(
         npcs: stats.npcs,
         births,
         deaths,
+        happiness: happiness / settlement_count,
+        food_security: food_security / settlement_count,
+        civic_level: civic_level / settlement_count,
     });
 
-    if trends.samples.len() > 24 {
-        let overflow = trends.samples.len() - 24;
+    if trends.samples.len() > 48 {
+        let overflow = trends.samples.len() - 48;
         trends.samples.drain(0..overflow);
     }
+}
+
+fn sparkline(values: impl Iterator<Item = f32>) -> String {
+    const BARS: [&str; 8] = ["_", "-", "=", "+", "*", "#", "%", "@"];
+    let values = values.collect::<Vec<_>>();
+    if values.is_empty() {
+        return "none".to_string();
+    }
+    let start = values.len().saturating_sub(18);
+    let window = &values[start..];
+    let min = window.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = window.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let span = (max - min).max(0.001);
+    window
+        .iter()
+        .map(|value| {
+            let index = (((*value - min) / span) * (BARS.len() - 1) as f32)
+                .round()
+                .clamp(0.0, (BARS.len() - 1) as f32) as usize;
+            BARS[index]
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn event_label(kind: LogEventKind) -> &'static str {

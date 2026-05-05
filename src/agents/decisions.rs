@@ -1049,6 +1049,10 @@ fn apply_npc_intents(
             * pace_boost
             * spell_speed
             * delta_seconds;
+        let pace = intent
+            .target
+            .map(|target| pace.min(transform.translation.truncate().distance(target)))
+            .unwrap_or(pace);
 
         transform.translation.x += intent.heading.x * pace;
         transform.translation.y += intent.heading.y * pace;
@@ -1128,11 +1132,12 @@ fn harvest_npc_resources(
         (
             &Transform,
             &NpcIntent,
-            &Needs,
+            &mut Needs,
             &mut Inventory,
             &mut Memory,
             &mut Npc,
             Option<&ManaPractice>,
+            Option<&KnownPrograms>,
         ),
         With<Npc>,
     >,
@@ -1144,7 +1149,9 @@ fn harvest_npc_resources(
         return;
     }
 
-    for (transform, intent, needs, mut inventory, mut memory, mut npc, practice) in &mut npcs {
+    for (transform, intent, mut needs, mut inventory, mut memory, mut npc, practice, programs) in
+        &mut npcs
+    {
         let coord = settings.tile_coord_for_position(transform.translation.truncate());
         let telekinesis_bonus = practice.map(|practice| practice.telekinesis).unwrap_or(0.0);
         let verdant_bonus = practice
@@ -1173,6 +1180,14 @@ fn harvest_npc_resources(
 
                     if taken > 0.0 {
                         memory.last_forage_coord = Some(coord);
+                        let waterfinding = programs
+                            .map(|programs| programs.knows(ProgramId::WaterFinding))
+                            .unwrap_or(false);
+                        let moisture = tile.moisture.clamp(0.0, 1.0);
+                        let drink = taken
+                            * (0.32 + moisture * 0.90 + if waterfinding { 0.45 } else { 0.0 });
+                        needs.thirst = (needs.thirst - drink).max(0.0);
+                        needs.fatigue = (needs.fatigue - drink * 0.08).max(0.0);
                     }
                     break;
                 }
@@ -1834,6 +1849,7 @@ fn consume_carried_food(
         if eaten > 0.0 {
             inventory.food -= eaten;
             needs.hunger = (needs.hunger - eaten * 1.35).max(0.0);
+            needs.thirst = (needs.thirst - eaten * 0.18).max(0.0);
             needs.fatigue = (needs.fatigue - eaten * 0.12).max(0.0);
             let hedonist_bonus =
                 if psyche.personality == crate::agents::personality::PersonalityType::Hedonist {
