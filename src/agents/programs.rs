@@ -158,16 +158,6 @@ impl KnownPrograms {
         }
     }
 
-    pub fn grant(&mut self, id: ProgramId, reason: &str) -> bool {
-        if self.learn(id) {
-            self.granted_by_world.push(id);
-            self.last_grant_reason = reason.to_string();
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn names(&self, limit: usize) -> String {
         self.known
             .iter()
